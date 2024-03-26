@@ -361,17 +361,34 @@ def get_graph_updater(cutoff, graph_key, switch_params):
 
 @dataclasses.dataclass(frozen=True)
 class GraphExternal:
+    """Generate graph from external edge index.
+
+    Args:
+    ------
+    graph_key: str
+        key to store the generated graph
+    edge_key: str
+        key to the edge index
+    additional_keys: Sequence[str]
+        additional keys to be padded
+    mult_size: float
+        multiplier for the size of the neighborlist
+    """
+
     graph_key: str
     edge_key: str
     additional_keys: Sequence[str] = dataclasses.field(default_factory=list)
     mult_size: float = 1.1
 
-    def init(self):
+    def init(self):  # noqa: D102
         return {"prev_nblist_size": 1,
                 "nblist_mult_size": self.mult_size}
 
-    def __call__(self, inputs: Dict, state={}):
+    def __call__(self, inputs: Dict, state={}):  # noqa: D102
+        # Padding multiplier for the neighborlist
         mult_size = float(state.get("nblist_mult_size", self.mult_size))
+
+        # Training initiation do not use edge_key
         if self.edge_key not in inputs:
             graph = {
                 "edge_src": np.array([], dtype=np.int32),
@@ -380,7 +397,9 @@ class GraphExternal:
                 "overflow": False,
                 "pbc_shifts": np.empty((0, 3), dtype=np.float32),
             }
-            return {**inputs, self.graph_key:graph}, state
+            return {**inputs, self.graph_key: graph}, state
+
+        # Get input graph information
         edge_index = inputs[self.edge_key]
         edge_src = edge_index[:, 0]
         edge_dst = edge_index[:, 1]
@@ -388,26 +407,40 @@ class GraphExternal:
         batch_index = inputs["batch_index"]
         natoms = inputs["natoms"]
         padding_value = coords.shape[0]
-
         vec = coords[edge_dst] - coords[edge_src]
+
+        # Periodic boundary conditions
         if 'cells' in inputs:
             cells = np.array(inputs["cells"], dtype=coords.dtype)
             if cells.ndim == 2:
                 cells = cells[None, :, :]
-            reciprocal_cells = inputs.get('reciprocal_cells', np.linalg.inv(cells))
-            batch_indexvec=batch_index[edge_src]
-            vecpbc = np.einsum("sij,sj->si", reciprocal_cells[batch_indexvec],vec)
+            reciprocal_cells = inputs.get(
+                'reciprocal_cells', np.linalg.inv(cells)
+            )
+            batch_indexvec = batch_index[edge_src]
+            # Vector in the reciprocal space
+            vecpbc = np.einsum(
+                "sij,sj->si", reciprocal_cells[batch_indexvec], vec
+            )
             pbc_shifts = -np.round(vecpbc)
-            vec = np.einsum("sij,sj->si",cells[batch_indexvec],vecpbc+pbc_shifts)
-        distances = np.sum(vec ** 2, axis=-1)
+            # Shift the vector by the periodic boundary conditions
+            vec = np.einsum(
+                "sij,sj->si", cells[batch_indexvec], vecpbc + pbc_shifts
+            )
 
-        src, dst = np.concatenate((edge_src, edge_dst)), np.concatenate((edge_dst, edge_src))
+        distances = np.sum(vec ** 2, axis=-1)
+        # Make the graph undirected
+        src, dst = (
+            np.concatenate((edge_src, edge_dst)),
+            np.concatenate((edge_dst, edge_src))
+        )
         d12 = np.concatenate((distances, distances))
         if 'cells' in inputs:
             pbc_shifts = np.concatenate((pbc_shifts, -pbc_shifts))
         else:
             pbc_shifts = None
 
+        # Previous neighborlist size
         prev_nblist_size = state.get("prev_nblist_size", 0)
         prev_nblist_size_ = prev_nblist_size
 
@@ -418,20 +451,32 @@ class GraphExternal:
         # Padding
         max_nat = coords.shape[0]
         edge_src = np.append(
-            src, max_nat * np.ones(prev_nblist_size_ - src.shape[0], dtype=np.int32)
+            src, max_nat * np.ones(
+                prev_nblist_size_ - src.shape[0],
+                dtype=np.int32
+            )
         )
         edge_dst = np.append(
-            dst, max_nat * np.ones(prev_nblist_size_ - dst.shape[0], dtype=np.int32)
+            dst, max_nat * np.ones(
+                prev_nblist_size_ - dst.shape[0],
+                dtype=np.int32
+            )
         )
         d12 = np.append(
             d12, np.ones(prev_nblist_size_ - d12.shape[0], dtype=np.float32)
         )
         if 'cells' in inputs:
             pbc_shifts = np.append(
-                pbc_shifts, np.zeros((prev_nblist_size_ - pbc_shifts.shape[0], pbc_shifts.shape[1]), dtype=np.float32)
+                pbc_shifts, np.zeros(
+                    (
+                        prev_nblist_size_ - pbc_shifts.shape[0],
+                        pbc_shifts.shape[1]
+                    ),
+                    dtype=np.float32
+                )
             )
 
-        
+        # Prepare the output
         state["prev_nblist_size"] = prev_nblist_size_
         out = {
             **inputs,
@@ -444,11 +489,12 @@ class GraphExternal:
             },
         }
 
+        # Additional keys to be padded
         for key in self.additional_keys:
             value = out[key]
-            assert value.shape[0] == edge_index.shape[0]
+            assert value.shape[0] == edge_index.shape[0]  # noqa: S101
             shape = list(value.shape)
-            shape[0] = prev_nblist_size_- value.shape[0]
+            shape[0] = prev_nblist_size_ - value.shape[0]
             value = np.append(
                 value,
                 np.zeros(shape),
@@ -457,8 +503,15 @@ class GraphExternal:
             out[key] = value
 
         return out, state
-    
+
     def get_processor(self) -> Tuple[nn.Module, Dict]:
+        """Get the graph processor module and its parameters.
+
+        Returns
+        -------
+        Tuple[nn.Module, Dict]
+            The graph processor module and its parameters.
+        """
         return GraphProcessor, {
             "cutoff": -1,
             "graph_key": self.graph_key,
@@ -467,12 +520,38 @@ class GraphExternal:
         }
 
     def get_updater(self) -> Tuple[nn.Module, Dict]:
+        """Update of the graph for the MD simulation.
+
+        Returns
+        -------
+        Tuple[nn.Module, Dict]
+            None as the updater is not implemented.
+
+        Raises
+        ------
+        NotImplementedError
+            Update is not implemented for the external graph.
+        """
         raise NotImplementedError(
-            "GraphGenerator does not have an updater. Use GraphGeneratorFixed instead."
+            "GraphExternal does not have an updater."
         )
 
     def get_graph_properties(self):
-        return {self.graph_key: {"cutoff": -1, "directed": True, 'external': True}}
+        """Get the graph properties.
+
+        Returns
+        -------
+        Dict
+            The graph properties.
+        """
+        return {
+            self.graph_key: {
+                "cutoff": -1,
+                "directed": True,
+                'external': True
+            }
+        }
+
 
 class GraphProcessor(nn.Module):
     cutoff: float
