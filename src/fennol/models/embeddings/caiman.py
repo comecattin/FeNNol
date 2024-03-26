@@ -11,6 +11,49 @@ from ..misc.e3 import FilteredTensorProduct, ChannelMixingE3
 
 
 class CaimanEmbedding(nn.Module):
+    """Covariant Atom-In-Molecule Network
+
+    FID : CAIMAN
+
+    This is en E(3) equivariant embedding that forms an equivariant neighbor density
+    and then uses multiple self-interaction tensor products to generate a tensorial embedding
+    along with a scalar embedding (similar to the tensor/scalar tracks in allegro).
+
+    Parameters
+    ----------
+    dim : int, default=128
+        The dimension of the embedding.
+    nchannels : int, default=16
+        The number of channels.
+    nchannels_density : Optional[int], default=None
+        The number of density channels.
+    nlayers : int, default=3
+        The number of layers.
+    lmax : int, default=2
+        The maximum value of l.
+    twobody_hidden : Sequence[int], default=[128]
+        The hidden layers for the two-body interaction.
+    embedding_hidden : Sequence[int], default=[]
+        The hidden layers for the embedding.
+    latent_hidden : Sequence[int], default=[128]
+        The hidden layers for the latent network.
+    activation : Union[Callable, str], default=nn.silu
+        The activation function.
+    graph_key : str, default="graph"
+        The key for the graph input.
+    embedding_key : str, default="embedding"
+        The key for the embedding output.
+    tensor_embedding_key : str, default="tensor_embedding"
+        The key for the tensor embedding output.
+    species_encoding : dict, default={}
+        The species encoding parameters.
+    radial_basis : dict, default={}
+        The radial basis parameters.
+    message_passing : bool, default=False
+        Whether to use message passing.
+
+    """
+
     _graphs_properties: Dict
     dim: int = 128
     nchannels: int = 16
@@ -28,7 +71,7 @@ class CaimanEmbedding(nn.Module):
     radial_basis: dict = dataclasses.field(default_factory=dict)
     message_passing: bool = False
 
-    FID: str  = "CAIMAN"
+    FID: str = "CAIMAN"
 
     @nn.compact
     def __call__(self, inputs):

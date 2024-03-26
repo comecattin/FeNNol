@@ -5,14 +5,59 @@ from ...utils.spherical_harmonics import generate_spherical_harmonics
 from ..misc.encodings import SpeciesEncoding, RadialBasis
 import dataclasses
 import numpy as np
-from typing import Any, Dict, List, Union, Callable, Tuple, Sequence,Optional
+from typing import Any, Dict, List, Union, Callable, Tuple, Sequence, Optional
 from ..misc.nets import FullyConnectedNet
-from ..misc.e3 import FilteredTensorProduct, ChannelMixingE3, ChannelMixing,E3NN_AVAILABLE,E3NN_EXCEPTION
+from ..misc.e3 import (
+    FilteredTensorProduct,
+    ChannelMixingE3,
+    ChannelMixing,
+    E3NN_AVAILABLE,
+    E3NN_EXCEPTION,
+)
 
 
 class AllegroEmbedding(nn.Module):
-    """
-    Allegro Embedding from "Learning Local Equivariant representations ..."
+    """Allegro equivariant pair embedding
+
+    FID : ALLEGRO
+
+    Reference
+    ---------
+    Musaelian, A., Batzner, S., Johansson, A. et al. Learning local equivariant representations for large-scale atomistic dynamics.
+      Nat Commun 14, 579 (2023). https://doi.org/10.1038/s41467-023-36329-y
+
+    Parameters
+    ----------
+    dim : int, default=128
+        The dimension of the embedding.
+    nchannels : int, default=16
+        The number of equivariant channels.
+    nlayers : int, default=3
+        The number of interaction layers.
+    lmax : int, default=2
+        The maximum degree of tensorial embedding.
+    lmax_density : Optional[int], default=None
+        The maximum degree of spherical harmonics for density.
+            If None, it will be set to lmax. Must be greater or equal to lmax.
+    twobody_hidden : Sequence[int], default=[128]
+        The number of hidden neurons in the two-body network.
+    embedding_hidden : Sequence[int], default=[]
+        The number of hidden neurons in the embedding network.
+    latent_hidden : Sequence[int], default=[128]
+        The number of hidden neurons in the latent network.
+    activation : Union[Callable, str], default=nn.silu
+        The activation function to use.
+    graph_key : str, default="graph"
+        The key in the input dictionary that corresponds to the graph.
+    embedding_key : str, default="embedding"
+        The key to use for the output embedding in the returned dictionary.
+    tensor_embedding_key : str, default="tensor_embedding"
+        The key to use for the output tensor embedding in the returned dictionary.
+    species_encoding : dict, default={}
+        The species encoding parameters.
+    radial_basis : dict, default={}
+        The radial basis parameters.
+
     """
 
     _graphs_properties: Dict
@@ -31,14 +76,11 @@ class AllegroEmbedding(nn.Module):
     species_encoding: dict = dataclasses.field(default_factory=dict)
     radial_basis: dict = dataclasses.field(default_factory=dict)
 
-    FID: str  = "ALLEGRO"
+    FID: str = "ALLEGRO"
 
     @nn.compact
     def __call__(self, inputs):
         species = inputs["species"]
-        assert (
-            len(species.shape) == 1
-        ), "Species must be a 1D array (batches must be flattened)"
 
         graph = inputs[self.graph_key]
         edge_src, edge_dst = graph["edge_src"], graph["edge_dst"]
@@ -93,9 +135,7 @@ class AllegroEmbedding(nn.Module):
                 jnp.zeros((species.shape[0], *rhoij.shape[1:])).at[edge_src].add(rhoij)
             )
 
-            Lij = FilteredTensorProduct(self.lmax, lmax_density)(
-                Vij, density[edge_src]
-            )
+            Lij = FilteredTensorProduct(self.lmax, lmax_density)(Vij, density[edge_src])
             scals = jax.lax.index_in_dim(Lij, 0, axis=-1, keepdims=False)
             lij = FullyConnectedNet(neurons=[*self.latent_hidden, self.dim])(
                 jnp.concatenate((xij, scals), axis=-1)
@@ -109,13 +149,54 @@ class AllegroEmbedding(nn.Module):
         return {**inputs, self.embedding_key: xij, self.tensor_embedding_key: Vij}
 
 
-
 if E3NN_AVAILABLE:
     import e3nn_jax as e3nn
-    
+
     class AllegroE3NNEmbedding(nn.Module):
-        """
-        Allegro Embedding from ...
+        """Allegro equivariant pair embedding
+
+        FID : ALLEGRO_E3NN
+
+        in this version, equivariant operations use the e3nn library.
+
+        Reference
+        ---------
+        Musaelian, A., Batzner, S., Johansson, A. et al. Learning local equivariant representations for large-scale atomistic dynamics.
+        Nat Commun 14, 579 (2023). https://doi.org/10.1038/s41467-023-36329-y
+
+
+        Parameters
+        ----------
+        dim : int, default=128
+            The dimension of the embedding.
+        nchannels : int, default=16
+            The number of equivariant channels.
+        nlayers : int, default=3
+            The number of interaction layers.
+        irreps_Vij : Union[str, int, e3nn.Irreps], default=2
+            Irreps used for the tensor embedding.
+            If an integer is provided, the irreps will be the ones of spherical harmonics of this degree.
+        lmax_density : Optional[int], default=None
+            The maximum degree of spherical harmonics for density.
+            If None, it will be set to lmax. Must be greater or equal to lmax.
+        twobody_hidden : Sequence[int], default=[128]
+            The number of hidden neurons in the two-body network.
+        embedding_hidden : Sequence[int], default=[]
+            The number of hidden neurons in the embedding network.
+        latent_hidden : Sequence[int], default=[128]
+            The number of hidden neurons in the latent network.
+        activation : Union[Callable, str], default=nn.silu
+            The activation function to use.
+        graph_key : str, default="graph"
+            The key in the input dictionary that corresponds to the graph.
+        embedding_key : str, default="embedding"
+            The key to use for the output embedding in the returned dictionary.
+        tensor_embedding_key : str, default="tensor_embedding"
+            The key to use for the output tensor embedding in the returned dictionary.
+        species_encoding : dict, default={}
+            The species encoding parameters.
+        radial_basis : dict, default={}
+            The radial basis parameters.
         """
 
         _graphs_properties: Dict
@@ -133,8 +214,8 @@ if E3NN_AVAILABLE:
         tensor_embedding_key: str = "tensor_embedding"
         species_encoding: dict = dataclasses.field(default_factory=dict)
         radial_basis: dict = dataclasses.field(default_factory=dict)
-        
-        FID: str  = "ALLEGRO_E3NN"
+
+        FID: str = "ALLEGRO_E3NN"
 
         @nn.compact
         def __call__(self, inputs):
@@ -188,7 +269,9 @@ if E3NN_AVAILABLE:
             #         graph["vec"] / graph["distances"][:, None]
             #     ),
             # )[:, None, :]
-            Yij = e3nn.spherical_harmonics(irreps_density,graph["vec"],normalize=True)[:,None,:]
+            Yij = e3nn.spherical_harmonics(
+                irreps_density, graph["vec"], normalize=True
+            )[:, None, :]
 
             Vij = (
                 e3nn.flax.Linear(irreps_Vij, channel_out=self.nchannels)(Yij)
@@ -224,11 +307,11 @@ if E3NN_AVAILABLE:
             if self.embedding_key is None:
                 return xij, Vij
             return {**inputs, self.embedding_key: xij, self.tensor_embedding_key: Vij}
+
 else:
+
     class AllegroE3NNEmbedding(nn.Module):
-        FID: str  = "ALLEGRO_E3NN"
+        FID: str = "ALLEGRO_E3NN"
 
         def __call__(self, *args, **kwargs) -> Any:
             raise E3NN_EXCEPTION
-
-
