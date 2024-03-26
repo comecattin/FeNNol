@@ -351,6 +351,25 @@ class SwitchFunction(nn.Module):
 
     @nn.compact
     def __call__(self, inputs) -> Any:
+        # Negative cutoff: return edge mask as float
+        if self.cutoff < 0:
+            if self.graph_key is not None:
+                graph = inputs[self.graph_key]
+                distances = graph["distances"]
+                edge_mask = graph["edge_mask"]
+            else:
+                distances, edge_mask = inputs
+            switch = edge_mask.astype(jnp.float32)
+
+            if self.graph_key is not None:
+                if self.output_key is not None:
+                    return {**inputs, self.output_key: switch}
+                else:
+                    return {**inputs, self.graph_key: {**graph, "switch": switch}}
+            else:
+                return switch, edge_mask
+
+
         if self.graph_key is not None:
             graph = inputs[self.graph_key]
             distances, edge_mask = graph["distances"], graph["edge_mask"]
@@ -360,7 +379,7 @@ class SwitchFunction(nn.Module):
             else:
                 cutoff = graph["cutoff"]
         else:
-            distances = inputs
+            distances, edge_mask = inputs
             assert (
                 self.cutoff is not None
             ), "cutoff must be specified if no graph is given"
