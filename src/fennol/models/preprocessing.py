@@ -359,6 +359,121 @@ def get_graph_updater(cutoff, graph_key, switch_params):
     return graph_updater
 
 
+@dataclasses.dataclass(frozen=True)
+class GraphExternal:
+    graph_key: str
+    edge_key: str
+    additional_keys: Sequence[str] = dataclasses.field(default_factory=list)
+    mult_size: float = 1.1
+
+    def init(self):
+        return {"prev_nblist_size": 1,
+                "nblist_mult_size": self.mult_size}
+
+    def __call__(self, inputs: Dict, state={}):
+        mult_size = float(state.get("nblist_mult_size", self.mult_size))
+        if self.edge_key not in inputs:
+            graph = {
+                "edge_src": np.array([], dtype=np.int32),
+                "edge_dst": np.array([], dtype=np.int32),
+                "d12": np.array([], dtype=np.float32),
+                "overflow": False,
+                "pbc_shifts": np.empty((0, 3), dtype=np.float32),
+            }
+            return {**inputs, self.graph_key:graph}, state
+        edge_index = inputs[self.edge_key]
+        edge_src = edge_index[:, 0]
+        edge_dst = edge_index[:, 1]
+        coords = inputs["coordinates"]
+        batch_index = inputs["batch_index"]
+        natoms = inputs["natoms"]
+        padding_value = coords.shape[0]
+
+        vec = coords[edge_dst] - coords[edge_src]
+        if 'cells' in inputs:
+            cells = np.array(inputs["cells"], dtype=coords.dtype)
+            if cells.ndim == 2:
+                cells = cells[None, :, :]
+            reciprocal_cells = inputs.get('reciprocal_cells', np.linalg.inv(cells))
+            batch_indexvec=batch_index[edge_src]
+            vecpbc = np.einsum("sij,sj->si", reciprocal_cells[batch_indexvec],vec)
+            pbc_shifts = -np.round(vecpbc)
+            vec = np.einsum("sij,sj->si",cells[batch_indexvec],vecpbc+pbc_shifts)
+        distances = np.sum(vec ** 2, axis=-1)
+
+        src, dst = np.concatenate((edge_src, edge_dst)), np.concatenate((edge_dst, edge_src))
+        d12 = np.concatenate((distances, distances))
+        if 'cells' in inputs:
+            pbc_shifts = np.concatenate((pbc_shifts, -pbc_shifts))
+        else:
+            pbc_shifts = None
+
+        prev_nblist_size = state.get("prev_nblist_size", 0)
+        prev_nblist_size_ = prev_nblist_size
+
+        nblist_size = src.shape[0]
+        if nblist_size > prev_nblist_size:
+            prev_nblist_size_ = int(mult_size * nblist_size)
+
+        # Padding
+        max_nat = coords.shape[0]
+        edge_src = np.append(
+            src, max_nat * np.ones(prev_nblist_size_ - src.shape[0], dtype=np.int32)
+        )
+        edge_dst = np.append(
+            dst, max_nat * np.ones(prev_nblist_size_ - dst.shape[0], dtype=np.int32)
+        )
+        d12 = np.append(
+            d12, np.ones(prev_nblist_size_ - d12.shape[0], dtype=np.float32)
+        )
+        if 'cells' in inputs:
+            pbc_shifts = np.append(
+                pbc_shifts, np.zeros((prev_nblist_size_ - pbc_shifts.shape[0], pbc_shifts.shape[1]), dtype=np.float32)
+            )
+
+        
+        state["prev_nblist_size"] = prev_nblist_size_
+        out = {
+            **inputs,
+            self.graph_key: {
+                "edge_src": edge_src,
+                "edge_dst": edge_dst,
+                "d12": d12,
+                "pbc_shifts": pbc_shifts,
+                "overflow": False,
+            },
+        }
+
+        for key in self.additional_keys:
+            value = out[key]
+            assert value.shape[0] == edge_index.shape[0]
+            shape = list(value.shape)
+            shape[0] = prev_nblist_size_- value.shape[0]
+            value = np.append(
+                value,
+                np.zeros(shape),
+                axis=0,
+            )
+            out[key] = value
+
+        return out, state
+    
+    def get_processor(self) -> Tuple[nn.Module, Dict]:
+        return GraphProcessor, {
+            "cutoff": -1,
+            "graph_key": self.graph_key,
+            "switch_params": {},
+            "name": f"{self.graph_key}_Processor",
+        }
+
+    def get_updater(self) -> Tuple[nn.Module, Dict]:
+        raise NotImplementedError(
+            "GraphGenerator does not have an updater. Use GraphGeneratorFixed instead."
+        )
+
+    def get_graph_properties(self):
+        return {self.graph_key: {"cutoff": -1, "directed": True, 'external': True}}
+
 class GraphProcessor(nn.Module):
     cutoff: float
     graph_key: str = "graph"
@@ -385,7 +500,7 @@ class GraphProcessor(nn.Module):
 
         switch, edge_mask = SwitchFunction(
             **{**self.switch_params, "cutoff": self.cutoff, "graph_key": None}
-        )(distances)
+        )((distances, edge_mask))
 
         graph_out = {
             **graph,
@@ -591,6 +706,10 @@ class GraphFilterProcessor(nn.Module):
                 .at[filter_indices]
                 .get(mode="fill", fill_value=self.cutoff)
             )
+
+        edge_src = graph["edge_src"]
+        coords = inputs["coordinates"]
+        edge_mask = edge_src < coords.shape[0]
         # edge_mask = distances < self.cutoff
 
         # switch = jnp.where(
@@ -598,7 +717,7 @@ class GraphFilterProcessor(nn.Module):
         # )
         switch, edge_mask = SwitchFunction(
             **{**self.switch_params, "cutoff": self.cutoff, "graph_key": None}
-        )(distances)
+        )((distances, edge_mask))
 
         graph_out = {
             **graph,
@@ -1057,4 +1176,5 @@ PREPROCESSING = {
     "GRAPH_FILTER": GraphFilter,
     "GRAPH_ANGULAR_EXTENSION": GraphAngularExtension,
     # "GRAPH_DENSE_EXTENSION": GraphDenseExtension,
+    'GRAPH_EXTERNAL': GraphExternal,
 }
