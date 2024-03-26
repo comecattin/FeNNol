@@ -359,16 +359,20 @@ class SwitchFunction(nn.Module):
                 edge_mask = graph["edge_mask"]
             else:
                 distances, edge_mask = inputs
+
+            # Return 0 for the padding atoms, 1 for the rest
             switch = edge_mask.astype(jnp.float32)
 
             if self.graph_key is not None:
                 if self.output_key is not None:
                     return {**inputs, self.output_key: switch}
                 else:
-                    return {**inputs, self.graph_key: {**graph, "switch": switch}}
+                    return {
+                        **inputs,
+                        self.graph_key: {**graph, "switch": switch}
+                    }
             else:
                 return switch, edge_mask
-
 
         if self.graph_key is not None:
             graph = inputs[self.graph_key]

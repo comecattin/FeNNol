@@ -1,13 +1,17 @@
-import os, io, sys
-import numpy as np
-from collections import defaultdict
+import io
+import json
+import os
 import pickle
+import sys
+from collections import defaultdict
+from typing import Callable, Dict, List, Optional, Tuple, Union
+
+import numpy as np
+import yaml
 from flax import traverse_util
-from typing import Dict, List, Tuple, Union, Optional, Callable
+
 from .databases import DBDataset, H5Dataset
 
-import json
-import yaml
 try:
     import tomlkit
 except ImportError:
@@ -21,6 +25,7 @@ except ImportError:
     )
 
 from ..models import FENNIX
+
 
 def load_configuration(config_file: str) -> Dict[str, any]:
     if config_file.endswith(".json"):
@@ -39,49 +44,73 @@ def load_configuration(config_file: str) -> Dict[str, any]:
     return parameters
 
 
-def load_dataset(training_parameters, rename_refs=[],infinite_iterator=True):
+def load_dataset(training_parameters, rename_refs=[], infinite_iterator=True):
     """
-    Load a dataset from a pickle file and return two iterators for training and validation batches.
+    Load a dataset from a pickle file.
+
+    And return two iterators for training and validation batches.
 
     Args:
         training_parameters (dict): A dictionary with the following keys:
             - 'dspath': str. Path to the pickle file containing the dataset.
             - 'batch_size': int. Number of samples per batch.
-        rename_refs (list, optional): A list of strings with the names of the reference properties to rename.
+        rename_refs (list, optional): A list of strings with the names
+                of the reference properties to rename.
             Default is an empty list.
 
-    Returns:
-        tuple: A tuple of two infinite iterators, one for training batches and one for validation batches.
-            For each element in the batch, we expect a "species" key with the atomic numbers of the atoms in the system. Arrays are concatenated along the first axis and the following keys are added to distinguish between the systems:
-            - 'natoms': np.ndarray. Array with the number of atoms in each system.
-            - 'batch_index': np.ndarray. Array with the index of the system to which each atom
-            if the keys "forces", "total_energy", "atomic_energies" or any of the elements in rename_refs are present, the keys are renamed by prepending "true_" to the key name.
+    Returns
+    -------
+        tuple: A tuple of two infinite iterators,
+            one for training batches and one for validation batches.
+            For each element in the batch, we expect a "species" key with
+                the atomic numbers of the atoms in the system.
+                Arrays are concatenated along the first axis and
+                the following keys are added to distinguish between the systems:
+                    - 'natoms': np.ndarray.
+                        Array with the number of atoms in each system.
+                    - 'batch_index': np.ndarray.
+                        Array with the index of the system to which each atom
+            if the keys "forces", "total_energy", "atomic_energies"
+            or any of the elements in rename_refs are present,
+            the keys are renamed by prepending "true_" to the key name.
     """
-    rename_refs = set(["forces", "total_energy", "atomic_energies"] + list(rename_refs))
+    rename_refs = set(
+        ["forces", "total_energy", "atomic_energies"] + list(rename_refs)
+        )
     pbc_training = training_parameters.get("pbc_training", False)
-
 
     if pbc_training:
         print("Periodic boundary conditions are active.")
         length_nopbc = training_parameters.get("length_nopbc", 1000.0)
         minimum_image = training_parameters.get("minimum_image", False)
         ase_nblist = training_parameters.get("ase_nblist", False)
+
         def collate_fn(batch):
             output = defaultdict(list)
+            atom_shift = 0
             for i, d in enumerate(batch):
                 nat = d["species"].shape[0]
                 output["natoms"].append(np.asarray([nat]))
                 output["batch_index"].append(np.asarray([i] * nat))
                 if "cell" not in d:
-                    cell = np.asarray([[length_nopbc, 0.0, 0.0], [0.0, length_nopbc, 0.0], [0.0, 0.0, length_nopbc]])
+                    cell = np.asarray(
+                        [[length_nopbc, 0.0, 0.0],
+                         [0.0, length_nopbc, 0.0],
+                         [0.0, 0.0, length_nopbc]]
+                    )
                 else:
                     cell = d["cell"]
                 output["cells"].append(cell.reshape(1, 3, 3))
 
                 for k, v in d.items():
-                    if k=="cell":
+                    if k == "cell":
                         continue
-                    output[k].append(np.asarray(v))
+                    v_array = np.asarray(v)
+                    # Shift atom number if necessary
+                    if k.endswith("_atidx"):
+                        v_array += atom_shift
+                    output[k].append(v_array)
+                atom_shift += nat 
             for k, v in output.items():
                 if v[0].ndim == 0:
                     output[k] = np.stack(v)
@@ -90,22 +119,31 @@ def load_dataset(training_parameters, rename_refs=[],infinite_iterator=True):
             for key in rename_refs:
                 if key in output:
                     output["true_" + key] = output.pop(key)
-            
-            output["minimum_image"]=minimum_image
-            output["ase_nblist"]=ase_nblist
-            output["training_flag"]=True
+
+            output["minimum_image"] = minimum_image
+            output["ase_nblist"] = ase_nblist
+            output["training_flag"] = True
             return output
     else:
         def collate_fn(batch):
             output = defaultdict(list)
+            atom_shift = 0
             for i, d in enumerate(batch):
                 if "cell" in d:
-                    raise ValueError("Activate pbc_training to use periodic boundary conditions.")
+                    raise ValueError(
+                        "Activate pbc_training to use periodic boundary conditions."
+                    )
                 nat = d["species"].shape[0]
                 output["natoms"].append(np.asarray([nat]))
                 output["batch_index"].append(np.asarray([i] * nat))
                 for k, v in d.items():
-                    output[k].append(np.asarray(v))
+                    v_array = np.array(v)
+                    # Shift atom number if necessary
+                    if k.endswith("_atidx"):
+                        v_array = v_array + atom_shift
+                    output[k].append(v_array)
+
+                atom_shift += nat
             for k, v in output.items():
                 if v[0].ndim == 0:
                     output[k] = np.stack(v)
@@ -114,8 +152,8 @@ def load_dataset(training_parameters, rename_refs=[],infinite_iterator=True):
             for key in rename_refs:
                 if key in output:
                     output["true_" + key] = output.pop(key)
-            
-            output["training_flag"]=True
+
+            output["training_flag"] = True
             return output
 
     # dspath = "dataset_ani1ccx.pkl"
@@ -145,7 +183,10 @@ def load_dataset(training_parameters, rename_refs=[],infinite_iterator=True):
         collate_fn=collate_fn,
     )
     dataloader_training = DataLoader(
-        dataset["training"], batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn
+        dataset["training"],
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=collate_fn
     )
 
     print("Dataset loaded.")
@@ -155,8 +196,7 @@ def load_dataset(training_parameters, rename_refs=[],infinite_iterator=True):
 
     def next_batch_factory(dataloader):
         while True:
-            for batch in dataloader:
-                yield batch
+            yield from dataloader
 
     validation_iterator = next_batch_factory(dataloader_validation)
     training_iterator = next_batch_factory(dataloader_training)
@@ -176,7 +216,8 @@ def load_model(
         parameters (dict): A dictionary of parameters for the model.
         model_file (str, optional): The path to a saved model file to load.
 
-    Returns:
+    Returns
+    -------
         FENNIX: A FENNIX model object.
     """
     print_model = parameters["training"].get("print_model", False)
@@ -215,7 +256,6 @@ def copy_parameters(variables, variables_ref, params):
             for k, v in flat.items()
         }
     )
-
 
 
 class TeeLogger(object):

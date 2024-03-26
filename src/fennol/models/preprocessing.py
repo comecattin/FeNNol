@@ -369,6 +369,8 @@ class GraphExternal:
         key to store the generated graph
     edge_key: str
         key to the edge index
+        The edge index should be a 2D array with shape (n_edges, 2)
+        It contains the source and destination of the edges (edge_src, edge_dst)
     additional_keys: Sequence[str]
         additional keys to be padded
     mult_size: float
@@ -379,6 +381,7 @@ class GraphExternal:
     edge_key: str
     additional_keys: Sequence[str] = dataclasses.field(default_factory=list)
     mult_size: float = 1.1
+    cutoff: float = -1
 
     def init(self):  # noqa: D102
         return {"prev_nblist_size": 1,
@@ -402,7 +405,10 @@ class GraphExternal:
         # Get input graph information
         edge_index = inputs[self.edge_key]
         edge_src = edge_index[:, 0]
+        mask = (edge_src >= 0).nonzero()[0]
+        edge_src = edge_src[mask]
         edge_dst = edge_index[:, 1]
+        edge_dst = edge_dst[mask]
         coords = inputs["coordinates"]
         batch_index = inputs["batch_index"]
         natoms = inputs["natoms"]
@@ -429,7 +435,7 @@ class GraphExternal:
             )
 
         distances = np.sum(vec ** 2, axis=-1)
-        # Make the graph undirected
+        # Make the graph directed
         src, dst = (
             np.concatenate((edge_src, edge_dst)),
             np.concatenate((edge_dst, edge_src))
@@ -493,6 +499,7 @@ class GraphExternal:
         for key in self.additional_keys:
             value = out[key]
             assert value.shape[0] == edge_index.shape[0]  # noqa: S101
+            value = value[mask]
             shape = list(value.shape)
             shape[0] = prev_nblist_size_ - value.shape[0]
             value = np.append(
@@ -513,7 +520,7 @@ class GraphExternal:
             The graph processor module and its parameters.
         """
         return GraphProcessor, {
-            "cutoff": -1,
+            "cutoff": self.cutoff,
             "graph_key": self.graph_key,
             "switch_params": {},
             "name": f"{self.graph_key}_Processor",
@@ -546,7 +553,7 @@ class GraphExternal:
         """
         return {
             self.graph_key: {
-                "cutoff": -1,
+                "cutoff": self.cutoff,
                 "directed": True,
                 'external': True
             }
@@ -1093,7 +1100,7 @@ class AtomPadding:
                     if v.shape[0] == nat:
                         output[k] = np.append(
                             v,
-                            np.zeros((add_atoms, *v.shape[1:]), dtype=v.dtype),
+                            - np.ones((add_atoms, *v.shape[1:]), dtype=v.dtype),
                             axis=0,
                         )
                     elif v.shape[0] == nsys:
@@ -1105,7 +1112,7 @@ class AtomPadding:
                             )
                         else:
                             output[k] = np.append(
-                                v, np.zeros((1, *v.shape[1:]), dtype=v.dtype), axis=0
+                                v, -np.ones((1, *v.shape[1:]), dtype=v.dtype), axis=0
                             )
             output["natoms"] = np.append(inputs["natoms"], add_atoms)
             output["species"] = np.append(
