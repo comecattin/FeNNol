@@ -78,14 +78,19 @@ class SchNetEmbedding(nn.Module):
                 "name": "RadialBasis",
             }
         )(distances)
+
+        def atom_wise(xi, i):
+            return nn.Dense(
+                self.dim,
+                name=f"atom_wise_{i}_{layer}",
+                use_bias=True
+            )(xi)
+
         # Interaction layer
         for layer in range(self.nlayers):
+
             # Atom-wise
-            xi = nn.Dense(
-                self.dim,
-                name=f"atom_wise_1_layer{layer}",
-                use_bias=True
-            )(xi_prev_layer)
+            xi = atom_wise(xi_prev_layer, 1)
 
             # cfconv
             w_l = FullyConnectedNet(
@@ -100,21 +105,13 @@ class SchNetEmbedding(nn.Module):
             )
 
             # Atom-wise
-            xi = nn.Dense(
-                self.dim,
-                name=f"atom_wise_2_{layer}",
-                use_bias=True
-            )(xi)
+            xi = atom_wise(xi, 2)
 
             # Activation
             xi = self.activation(xi)
 
             # Atom-wise
-            xi = nn.Dense(
-                self.dim,
-                name=f"atom_wise_3_{layer}",
-                use_bias=True
-            )(xi)
+            xi = atom_wise(xi, 3)
 
             # Residual connection
             if layer > 0:
