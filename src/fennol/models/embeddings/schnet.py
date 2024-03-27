@@ -7,10 +7,11 @@ import dataclasses
 from typing import Callable, Dict, Union
 
 import flax.linen as nn
+import jax
 import jax.numpy as jnp
 
-from ..misc.encodings import RadialBasis, SpeciesEncoding
-from ..misc.nets import FullyConnectedNet
+from fennol.models.misc.encodings import RadialBasis, SpeciesEncoding
+from fennol.models.misc.nets import FullyConnectedNet
 
 
 class SchNetEmbedding(nn.Module):
@@ -69,6 +70,14 @@ class SchNetEmbedding(nn.Module):
         )(species)
 
         xi_prev_layer = onehot
+        distances = graph["distances"]
+        radial_basis = RadialBasis(
+            **{
+                "end": cutoff,
+                **self.radial_basis,
+                "name": "RadialBasis",
+            }
+        )(distances)
         # Interaction layer
         for layer in range(self.nlayers):
             # Atom-wise
@@ -79,24 +88,16 @@ class SchNetEmbedding(nn.Module):
             )(xi_prev_layer)
 
             # cfconv
-            distances = graph["distances"]
-            radial_basis = RadialBasis(
-                **{
-                    "end": cutoff,
-                    **self.radial_basis,
-                    "name": "RadialBasis",
-                }
-            )(distances)
             w_l = FullyConnectedNet(
                 [self.dim, self.dim],
                 activation=self.activation,
                 name=f"filter_weight_{layer}",
                 use_bias=True,
             )(radial_basis)
-            w_l = w_l[:, None, :]
-            w_l = jnp.repeat(w_l, xi.shape[1], axis=1)
             xi_j = xi[edge_dst]
-            xi = jnp.sum(w_l * xi_j, axis=1)
+            xi = jax.ops.segment_sum(
+                w_l * xi_j, edge_src, species.shape[0]
+            )
 
             # Atom-wise
             xi = nn.Dense(
@@ -116,7 +117,8 @@ class SchNetEmbedding(nn.Module):
             )(xi)
 
             # Residual connection
-            xi = xi + xi_prev_layer
+            if layer > 0:
+                xi = xi + xi_prev_layer
             xi_prev_layer = xi
 
         output = {
@@ -127,4 +129,48 @@ class SchNetEmbedding(nn.Module):
 
 
 if __name__ == "__main__":
-    pass
+
+    from jax.random import PRNGKey
+
+    from fennol import FENNIX
+
+    # Test
+    model_water = FENNIX(
+    cutoff=5.0,
+    rng_key=PRNGKey(0),
+    modules={
+            'embedding': {
+                'module_name': 'SCHNET',
+                'dim': 64,
+                'nlayers': 3,
+                'graph_key': 'graph',
+                'embedding_key': 'embedding',
+            },
+        }
+    )
+    coordinates_water = jnp.array(
+        [
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0]
+            ]
+        ]
+    ).reshape(-1, 3)
+
+    species = jnp.array(
+        [
+            [8, 1, 1]
+        ]
+    ).reshape(-1)
+
+    natoms = jnp.array([3])
+    batch_index = jnp.array([0, 0, 0])
+
+    output_water = model_water(
+        species=species,
+        coordinates=coordinates_water,
+        natoms=natoms,
+        batch_index=batch_index
+    )
+
