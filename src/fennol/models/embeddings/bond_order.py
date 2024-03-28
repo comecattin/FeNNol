@@ -8,6 +8,7 @@ from typing import Callable, Dict, Sequence, Union
 
 import flax.linen as nn
 import jax
+import jax.numpy as jnp
 
 from ...utils.activations import ssp
 from ..misc.encodings import RadialBasis, SpeciesEncoding
@@ -24,6 +25,7 @@ class SchNETBondEmbedding(nn.Module):
         default_factory=lambda: [64, 64]
     )
     graph_key: str = "graph"
+    bond_order_key: str = "bond_order"
     embedding_key: str = "embedding"
     radial_basis: dict = dataclasses.field(default_factory=dict)
     species_encoding: dict = dataclasses.field(default_factory=dict)
@@ -38,6 +40,8 @@ class SchNETBondEmbedding(nn.Module):
         switch = graph["switch"][:, None]
         edge_src, edge_dst = graph["edge_src"], graph["edge_dst"]
         cutoff = self._graphs_properties[self.graph_key]["cutoff"]
+        bond_order = graph[self.bond_order_key]
+
         onehot = SpeciesEncoding(
             **self.species_encoding, name="SpeciesEncoding"
         )(species)
@@ -54,6 +58,14 @@ class SchNETBondEmbedding(nn.Module):
                 "name": "RadialBasis",
             }
         )(distances)
+
+        bond_order_idx = (bond_order * 2).astype(jnp.int32) - 2
+        # Simple, aromatic and double bonds are encoded respectively
+        # as [1,0,0], [0,1,0] and [0,0,1]
+        bond_order = jnp.eye(3)[bond_order_idx]
+        bond_order = nn.Dense(
+            self.dim, name="bond_order_linear", use_bias=True
+        )(bond_order)
 
         def atom_wise(xi, i, layer):
             return nn.Dense(
@@ -74,7 +86,9 @@ class SchNETBondEmbedding(nn.Module):
             )(radial_basis)
             xi_j = xi[edge_dst]
             xi = jax.ops.segment_sum(
-                self.activation(w_l) * xi_j * switch, edge_src, species.shape[0]
+                self.activation(w_l) * xi_j * bond_order * switch,
+                edge_src,
+                species.shape[0]
             )
 
             # Atom-wise
