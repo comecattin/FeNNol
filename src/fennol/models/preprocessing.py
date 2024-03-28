@@ -400,6 +400,9 @@ class GraphExternal:
                 "overflow": False,
                 "pbc_shifts": np.empty((0, 3), dtype=np.float32),
             }
+            # Additional keys
+            for key in self.additional_keys:
+                graph[key] = np.array([], dtype=np.float32)
             return {**inputs, self.graph_key: graph}, state
 
         # Get input graph information
@@ -507,7 +510,7 @@ class GraphExternal:
                 np.zeros(shape),
                 axis=0,
             )
-            out[key] = value
+            out[self.graph_key][key] = value
 
         return out, state
 
