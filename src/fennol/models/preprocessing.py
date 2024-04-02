@@ -400,10 +400,11 @@ class GraphExternal:
                 "overflow": False,
                 "pbc_shifts": np.empty((0, 3), dtype=np.float32),
             }
+            out = {**inputs, self.graph_key: graph}
             # Additional keys
             for key in self.additional_keys:
-                graph[key] = np.array([], dtype=np.float32)
-            return {**inputs, self.graph_key: graph}, state
+                out[key] = np.array([], dtype=np.float32)
+            return out, state
 
         # Get input graph information
         edge_index = inputs[self.edge_key]
@@ -503,6 +504,7 @@ class GraphExternal:
             value = out[key]
             assert value.shape[0] == edge_index.shape[0]  # noqa: S101
             value = value[mask]
+            value = np.concatenate((value, value))
             shape = list(value.shape)
             shape[0] = prev_nblist_size_ - value.shape[0]
             value = np.append(
@@ -510,7 +512,7 @@ class GraphExternal:
                 np.zeros(shape),
                 axis=0,
             )
-            out[self.graph_key][key] = value
+            out[key] = value
 
         return out, state
 
