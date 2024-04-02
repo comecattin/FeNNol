@@ -21,9 +21,9 @@ class SchNETBondEmbedding(nn.Module):
     _graphs_properties: Dict
     dim: int = 64
     nlayers: int = 3
-    conv_hidden: Sequence[int] = dataclasses.field(
-        default_factory=lambda: [64, 64]
-    )
+    conv_hidden: Sequence[int] = dataclasses.field(default_factory=lambda: [64, 64])
+    n_bonds_type: int = 5
+    sub_dim: int = 16
     graph_key: str = "graph"
     bond_order_key: str = "bond_order"
     embedding_key: str = "embedding"
@@ -40,17 +40,19 @@ class SchNETBondEmbedding(nn.Module):
         switch = graph["switch"][:, None]
         edge_src, edge_dst = graph["edge_src"], graph["edge_dst"]
         cutoff = self._graphs_properties[self.graph_key]["cutoff"]
-        bond_order = graph[self.bond_order_key]
+        bond_order = inputs[self.bond_order_key].reshape(-1, self.n_bonds_type)
 
-        onehot = SpeciesEncoding(
-            **self.species_encoding, name="SpeciesEncoding"
-        )(species)
+        onehot = SpeciesEncoding(**self.species_encoding, name="SpeciesEncoding")(
+            species
+        )
 
-        xi_prev_layer = nn.Dense(
-            self.dim, name="species_linear", use_bias=False
-        )(onehot)
+        xi = nn.Dense(self.dim, name="species_linear", use_bias=False)(
+            onehot
+        )
+
 
         distances = graph["distances"]
+        
         radial_basis = RadialBasis(
             **{
                 "end": cutoff,
@@ -59,54 +61,47 @@ class SchNETBondEmbedding(nn.Module):
             }
         )(distances)
 
-        bond_order_idx = (bond_order * 2).astype(jnp.int32) - 2
-        # Simple, aromatic and double bonds are encoded respectively
-        # as [1,0,0], [0,1,0] and [0,0,1]
-        bond_order = jnp.eye(3)[bond_order_idx]
-        bond_order = nn.Dense(
-            self.dim, name="bond_order_linear", use_bias=True
-        )(bond_order)
-
-        def atom_wise(xi, i, layer):
-            return nn.Dense(
-                self.dim, name=f"atom_wise_{i}_{layer}", use_bias=True
-            )(xi)
-
         # Interaction layer
         for layer in range(self.nlayers):
-            # Atom-wise
-            xi = atom_wise(xi_prev_layer, 1, layer)
 
-            # cfconv
-            w_l = FullyConnectedNet(
-                [*self.conv_hidden, self.dim],
-                activation=self.activation,
-                name=f"filter_weight_{layer}",
-                use_bias=True,
-            )(radial_basis)
-            xi_j = xi[edge_dst]
-            xi = jax.ops.segment_sum(
-                self.activation(w_l) * xi_j * bond_order * switch,
-                edge_src,
-                species.shape[0]
+            si, mi = jnp.split(
+                nn.Dense(
+                    self.sub_dim * 2,
+                    name=f"species_linear_{layer}",
+                    use_bias=True,
+                )(xi),
+                [
+                    self.sub_dim,
+                ],
+                axis=-1,
             )
 
-            # Atom-wise
-            xi = atom_wise(xi, 2, layer)
+            # cfconv
+            xi_shape = radial_basis.shape[1] * mi.shape[1] * bond_order.shape[1]
+            xi_j = (
+                radial_basis[:, :, None, None]
+                * mi[edge_dst, None, :, None]
+                * bond_order[:, None, None, :]
+            ).reshape(radial_basis.shape[0], xi_shape)
 
-            # Activation
-            xi = self.activation(xi)
+            dxi = jax.ops.segment_sum(xi_j * switch, edge_src, species.shape[0])
 
-            # Atom-wise
-            xi = atom_wise(xi, 3, layer)
+            dxi = jnp.concatenate([dxi, si], axis=-1)
+
+            dxi = FullyConnectedNet(
+                [*self.conv_hidden, self.dim],
+                activation=self.activation,
+                name=f"fc_{layer}",
+            )(dxi)
 
             # Residual connection
-            xi = xi + xi_prev_layer
-            xi_prev_layer = xi
-
+            xi = xi + dxi
+            
         output = {
             **inputs,
             self.embedding_key: xi,
+            "radial_basis": radial_basis,
+            "bond_order": bond_order,
         }
         return output
 
