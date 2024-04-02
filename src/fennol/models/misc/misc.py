@@ -15,9 +15,13 @@ from ...utils.periodic_table import (
 
 def apply_switch(x: jax.Array, switch: jax.Array):
     shape = x.shape
+    if len(shape)==1:
+        return x * switch
+    
+    shape1 = np.prod(shape[1:])
     return (
-        jnp.expand_dims(x, axis=-1).reshape(shape[0], -1) * switch[:, None]
-    ).reshape(shape)
+            jnp.expand_dims(x, axis=-1).reshape(shape[0], shape1) * switch[:, None]
+        ).reshape(shape)
 
 class ApplySwitch(nn.Module):
     key: str
@@ -69,7 +73,6 @@ class ScatterEdges(nn.Module):
         output = jax.ops.segment_sum(x,edge_src,nat) #jnp.zeros((nat, *x.shape[1:])).at[edge_src].add(x,mode="drop")
         if not self._graphs_properties[self.graph_key]["directed"]:
             output = output + jax.ops.segment_sum(x,edge_dst,nat)
-
         output_key = self.key if self.output_key is None else self.output_key
         return {**inputs, output_key: output}
 
