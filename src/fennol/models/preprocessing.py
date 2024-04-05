@@ -502,17 +502,26 @@ class GraphExternal:
         # Additional keys to be padded
         for key in self.additional_keys:
             value = out[key]
-            assert value.shape[0] == edge_index.shape[0]  # noqa: S101
-            value = value[mask]
-            value = np.concatenate((value, value))
-            shape = list(value.shape)
-            shape[0] = prev_nblist_size_ - value.shape[0]
-            value = np.append(
-                value,
-                np.zeros(shape),
-                axis=0,
-            )
-            out[key] = value
+            if value.shape[0] == edge_index.shape[0]:
+                value = value[mask]
+                value = np.concatenate((value, value))
+                shape = list(value.shape)
+                shape[0] = prev_nblist_size_ - value.shape[0]
+                value = np.append(
+                    value,
+                    np.zeros(shape),
+                    axis=0,
+                )
+                out[key] = value
+
+            elif value.shape[0] == coords.shape[0]:
+                # No padding on the node features
+                continue
+
+            else:
+                raise ValueError(
+                    f"Shape mismatch for {key}: {value.shape[0]}"
+                )
 
         return out, state
 
@@ -544,9 +553,12 @@ class GraphExternal:
         NotImplementedError
             Update is not implemented for the external graph.
         """
-        raise NotImplementedError(
-            "GraphExternal does not have an updater."
-        )
+
+        return get_graph_updater(**{
+            "cutoff": self.cutoff,
+            "graph_key": self.graph_key,
+            "switch_params": {},
+        })
 
     def get_graph_properties(self):
         """Get the graph properties.
