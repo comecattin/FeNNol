@@ -27,6 +27,8 @@ class AllegroBond(nn.Module):
     n_channel: int = 16
     graph_key: str = "graph"
     bond_order_key: str = "bond_order"
+    ecfp_key: str = "ECFP"
+    ecfp_dim: int = 16
     embedding_key: str = "embedding"
     radial_basis: dict = dataclasses.field(default_factory=dict)
     species_encoding: dict = dataclasses.field(default_factory=dict)
@@ -42,6 +44,7 @@ class AllegroBond(nn.Module):
         edge_src, edge_dst = graph["edge_src"], graph["edge_dst"]
         cutoff = self._graphs_properties[self.graph_key]["cutoff"]
         bond_order = inputs[self.bond_order_key].reshape(-1, self.n_bonds_type)
+        ecfp_encoding = inputs[self.ecfp_key].reshape(-1, self.ecfp_dim)
 
         onehot = SpeciesEncoding(**self.species_encoding, name="SpeciesEncoding")(
             species
@@ -65,7 +68,13 @@ class AllegroBond(nn.Module):
         )(distances)
         
         x_ij = jnp.concatenate(
-            (onehot[edge_src], onehot[edge_dst], radial_basis, bond_order), axis=-1
+            (
+                onehot[edge_src], onehot[edge_dst],
+                radial_basis,
+                bond_order,
+                ecfp_encoding[edge_src], ecfp_encoding[edge_dst]
+            ),
+            axis=-1
         )
         x_ij = FullyConnectedNet(
             [*self.init_hidden, self.dim],
@@ -149,6 +158,7 @@ class AllegroBond(nn.Module):
             self.embedding_key: x_ij,
             "radial_basis": radial_basis,
             "bond_order": bond_order,
+            "ECFP": ecfp_encoding,
         }
         return output
 
