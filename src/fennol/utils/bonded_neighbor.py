@@ -133,5 +133,30 @@ def get_fourth_neighbor(
                 n_14[i] += 1
     return n_14, i_14
 
+def bonded_order_sparse_to_dense(bond_order, edge_src, edge_dst, n_atom):
+    """Convert the sparse bond order to dense bond order.
+
+    Parameters
+    ----------
+    bond_order : np.ndarray
+        Bond order between atoms.
+    edge_src : np.ndarray
+        Source atoms in the graph.
+    edge_dst : np.ndarray
+        Destination atoms in the graph.
+    n_atom : int
+        Number of atoms in the system.
+
+    Returns
+    -------
+    np.ndarray
+        Dense bond order matrix.
+    """
+    bond_order_dense = np.zeros((n_atom, n_atom))
+    for i, j, bo in zip(edge_src, edge_dst, bond_order):
+        bond_order_dense[i, j] = bo
+        bond_order_dense[j, i] = bo
+    return bond_order_dense
+
 if __name__ == "__main__":
     pass

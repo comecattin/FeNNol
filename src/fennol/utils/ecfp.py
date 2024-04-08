@@ -3,8 +3,8 @@
 
 import numpy as np
 
+#from .periodic_table import ATOMIC_MASSES
 from fennol.utils.periodic_table import ATOMIC_MASSES
-
 
 def get_hash(list):
     """Get hash of a list."""
@@ -148,42 +148,31 @@ def one_hot_hash_list(hash_list, dim):
 
 
 if __name__ == "__main__":
+    from fennol.utils.bonded_neighbor import get_first_neighbor, bonded_order_sparse_to_dense
 
     species = np.array([1, 1, 6, 6, 1, 6, 1, 6, 1, 6, 1, 1, 1])
-    bond_matrix = np.array(
-        [
-            [2, -1, -1, -1],
-            [2, -1, -1, -1],
-            [0, 1, 3, -1],
-            [2, 4, 5, -1],
-            [3, -1, -1, -1],
-            [3, 6, 7, -1],
-            [5, -1, -1, -1],
-            [5, 8, 9, -1],
-            [7, -1, -1, -1],
-            [7, 10, 11, 12],
-            [9, -1, -1, -1],
-            [9, -1, -1, -1],
-            [9, -1, -1, -1],
-        ]
+
+    edge_src = [2,2,3,3,5,5,7,7,9,9,9,9]
+    edge_dst = [0,1,2,4,3,6,5,8,7,10,11,12]
+
+    atom_bonded, bond_matrix = get_first_neighbor(
+        len(species),
+        edge_src,
+        edge_dst
     )
 
-    atom_bonded = np.array([1, 1, 1, 4, 4, 1, 1, 4, 1, 1, 4, 1, 1, 4, 1, 1, 1])
+    bond_order_spare = np.array([1,1,1.5,1,1.5,1,1.5,1,1.5,1,1,1])
+    bond_order = bonded_order_sparse_to_dense(
+        bond_order_spare,
+        edge_src,
+        edge_dst,
+        len(species)
+    )
+
     valency_without_hydrogen = np.ones(len(species))
     charge = np.zeros(len(species))
     attached_hydrogens = np.zeros(len(species))
     is_in_ring = np.zeros(len(species))
-    bond_order = np.zeros((len(species), len(species)))
-    for i, atom in enumerate(bond_matrix):
-        for j in atom:
-            if i == j:
-                continue
-            if j != -1:
-                bond_order[i, j] = 1
-    bond_order[2, 3] = 1.5
-    bond_order[3, 2] = 1.5
-    bond_order[5, 7] = 1.5
-    bond_order[7, 5] = 1.5
 
     output = ecfp(
         species=species,
