@@ -62,6 +62,7 @@ def ecfp(
     bond_order: np.ndarray,
     atom_bonded: np.ndarray,
     bond_matrix: np.ndarray,
+    valency_without_hydrogen: np.ndarray,
     attached_hydrogens: np.ndarray,
     charges: np.ndarray,
     is_in_ring: np.ndarray,
@@ -85,6 +86,9 @@ def ecfp(
         Adjacency matrix of the atoms.
         The shape of the array is (n_atoms, n_max_bond).
         The padding is done with -1.
+    valency_without_hydrogen : np.ndarray
+        Valency of the atom without hydrogen.
+        The shape of the array is (n_atoms,).
     attached_hydrogens : np.ndarray
         Number of hydrogens attached to the atom.
         The shape of the array is (n_atoms,).
@@ -180,6 +184,7 @@ if __name__ == "__main__":
         bond_matrix=bond_matrix,
         atom_bonded=atom_bonded,
         attached_hydrogens=attached_hydrogens,
+        valency_without_hydrogen=valency_without_hydrogen,
         charges=charge,
         is_in_ring=is_in_ring,
         radius=5,
