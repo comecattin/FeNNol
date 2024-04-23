@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
 import numpy as np
+from numba import njit
+from rdkit import Chem
+from rdkit.Chem import rdDetermineBonds, Draw
 
 def get_first_neighbor(
         n_atom: int,
@@ -157,6 +160,65 @@ def bonded_order_sparse_to_dense(bond_order, edge_src, edge_dst, n_atom):
         bond_order_dense[i, j] = bo
         bond_order_dense[j, i] = bo
     return bond_order_dense
+
+def get_edge_list(smiles, max_neighbor=3, padding=4):
+    """Get the edge list of the molecule.
+    
+    Parameters
+    ----------
+    smiles : str
+        SMILES string of the molecule.
+    max_neighbor : int, optional
+        Maximum number of neighbors to consider, by default 3
+    padding : int, optional
+        Padding of the neighbor list, by default 4
+    
+    Returns
+    -------
+    np.ndarray
+        Edge list of the molecule.
+    """
+    if max_neighbor > 3:
+        raise NotImplementedError("Only support up to 3rd neighbor (1-4 interaction).")
+
+    raw_mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.Mol(raw_mol)
+    n_atom = mol.GetNumAtoms()
+
+    edge_src = []
+    edge_dst = []
+
+    # 1-2 interaction
+    for bond in mol.GetBonds():
+        edge_src.append(bond.GetBeginAtomIdx())
+        edge_dst.append(bond.GetEndAtomIdx())
+        n_12, i_12 = get_first_neighbor(n_atom, edge_src, edge_dst, padding)
+    
+    # 1-3 interaction
+    if max_neighbor >= 2:
+        n_13, i_13 = get_third_neighbor(n_atom, n_12, i_12, padding)
+        edge_src_13 = np.arange(n_atom)[:, None].repeat(padding * 3, axis=1).flatten()
+        edge_dst_13 = i_13.flatten()
+        mask = edge_src_13 < edge_dst_13
+        edge_src_13 = edge_src_13[mask]
+        edge_dst_13 = edge_dst_13[mask]
+        edge_src.extend(edge_src_13)
+        edge_dst.extend(edge_dst_13)
+    
+    # 1-4 interaction
+    if max_neighbor >= 3:
+        n_14, i_14 = get_fourth_neighbor(n_atom, n_12, n_13, i_12, i_13, padding)
+        edge_src_14 = np.arange(n_atom)[:, None].repeat(padding * 9, axis=1).flatten()
+        edge_dst_14 = i_14.flatten()
+        mask = edge_src_14 < edge_dst_14
+        edge_src_14 = edge_src_14[mask]
+        edge_dst_14 = edge_dst_14[mask]
+        edge_src.extend(edge_src_14)
+        edge_dst.extend(edge_dst_14)
+
+    edge_index_out = np.column_stack((edge_src, edge_dst))
+
+    return edge_index_out
 
 if __name__ == "__main__":
     pass
