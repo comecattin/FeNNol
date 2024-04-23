@@ -17,7 +17,6 @@ from .preprocessing import (
     JaxConverter,
     atom_unpadding,
 )
-from ..utils import deep_update
 from .modules import MODULES, FENNIXModules
 
 
@@ -235,9 +234,10 @@ class FENNIX:
                 num_segments=len(data["natoms"]),
             )
 
-            out["virial_tensor"] = (
-                jnp.einsum("sik,sjk->sij", dedcells, cells[batch_index]) + fx
-            )
+            # out["virial_tensor"] = (
+            #     jnp.einsum("sik,skj->sij", dedcells, cells) + fx
+            # )
+            out["virial_tensor"] = jax.vmap(jnp.matmul)(dedcells, cells) + fx
 
             return out["total_energy"], out["forces"], out["virial_tensor"], out
 
