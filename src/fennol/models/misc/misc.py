@@ -373,7 +373,7 @@ class SwitchFunction(nn.Module):
                         self.graph_key: {**graph, "switch": switch}
                     }
             else:
-                return switch, edge_mask
+                return switch
 
         if self.graph_key is not None:
             graph = inputs[self.graph_key]

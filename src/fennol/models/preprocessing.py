@@ -574,11 +574,42 @@ class GraphExternal:
     mult_size: float = 1.1
     cutoff: float = -1
 
-    def init(self):  # noqa: D102
-        return {"prev_nblist_size": 1,
-                "nblist_mult_size": self.mult_size}
+    def init(self):
+        return FrozenDict({"prev_nblist_size": 1,
+                "nblist_mult_size": self.mult_size})
+    
+    def get_processor(self) -> Tuple[nn.Module, Dict]:
+        """Get the graph processor module and its parameters.
 
-    def __call__(self, inputs: Dict, state={}):  # noqa: D102
+        Returns
+        -------
+        Tuple[nn.Module, Dict]
+            The graph processor module and its parameters.
+        """
+        return GraphProcessor, {
+            "cutoff": self.cutoff,
+            "graph_key": self.graph_key,
+            "switch_params": {},
+            "name": f"{self.graph_key}_Processor",
+        }
+
+    def get_graph_properties(self):
+        """Get the graph properties.
+
+        Returns
+        -------
+        Dict
+            The graph properties.
+        """
+        return {
+            self.graph_key: {
+                "cutoff": self.cutoff,
+                "directed": True,
+                'external': True
+            }
+        }
+
+    def __call__(self,state, inputs: Dict,return_state_update=False, add_margin=False):
         # Padding multiplier for the neighborlist
         mult_size = float(state.get("nblist_mult_size", self.mult_size))
 
@@ -595,7 +626,9 @@ class GraphExternal:
             # Additional keys
             for key in self.additional_keys:
                 out[key] = np.array([], dtype=np.float32)
-            return out, state
+            if return_state_update:
+                return FrozenDict(state), out, {}
+            return state, out
 
         # Get input graph information
         edge_index = inputs[self.edge_key]
@@ -646,39 +679,33 @@ class GraphExternal:
         prev_nblist_size_ = prev_nblist_size
 
         nblist_size = src.shape[0]
+        state_up = {}
+        new_state = {**state}
         if nblist_size > prev_nblist_size:
             prev_nblist_size_ = int(mult_size * nblist_size)
+            state_up["prev_nblist_size"] = (prev_nblist_size_, prev_nblist_size)
+            new_state["prev_nblist_size"] = prev_nblist_size_
 
         # Padding
         max_nat = coords.shape[0]
-        edge_src = np.append(
-            src, max_nat * np.ones(
-                prev_nblist_size_ - src.shape[0],
-                dtype=np.int32
-            )
-        )
-        edge_dst = np.append(
-            dst, max_nat * np.ones(
-                prev_nblist_size_ - dst.shape[0],
-                dtype=np.int32
-            )
-        )
-        d12 = np.append(
-            d12, np.ones(prev_nblist_size_ - d12.shape[0], dtype=np.float32)
-        )
+
+        edge_src = np.full(prev_nblist_size_, max_nat, dtype=np.int32)
+        edge_src[:src.shape[0]] = src
+        edge_dst = np.full(prev_nblist_size_, max_nat, dtype=np.int32)
+        edge_dst[:dst.shape[0]] = dst
+
+        d12_ = np.full(prev_nblist_size_, self.cutoff**2, dtype=np.float32)
+        d12_[:d12.shape[0]] = d12
+        d12 = d12_
+
         if 'cells' in inputs:
-            pbc_shifts = np.append(
-                pbc_shifts, np.zeros(
-                    (
-                        prev_nblist_size_ - pbc_shifts.shape[0],
-                        pbc_shifts.shape[1]
-                    ),
-                    dtype=np.float32
-                )
+            pbc_shifts_ = np.full(
+                (prev_nblist_size_, 3), 0.0, dtype=np.float32
             )
+            pbc_shifts_[:pbc_shifts.shape[0]] = pbc_shifts
+            pbc_shifts = pbc_shifts_
 
         # Prepare the output
-        state["prev_nblist_size"] = prev_nblist_size_
         out = {
             **inputs,
             self.graph_key: {
@@ -697,13 +724,10 @@ class GraphExternal:
                 value = value[mask]
                 value = np.concatenate((value, value))
                 shape = list(value.shape)
-                shape[0] = prev_nblist_size_ - value.shape[0]
-                value = np.append(
-                    value,
-                    np.zeros(shape),
-                    axis=0,
-                )
-                out[key] = value
+                shape[0] = prev_nblist_size_
+                value_ = np.zeros(shape, dtype=value.dtype)
+                value_[:value.shape[0]] = value
+                out[key] = value_
 
             elif value.shape[0] == coords.shape[0]:
                 # No padding on the node features
@@ -713,55 +737,26 @@ class GraphExternal:
                 raise ValueError(
                     f"Shape mismatch for {key}: {value.shape[0]}"
                 )
+        if return_state_update:
+            return FrozenDict(new_state), out, state_up
+        return FrozenDict(new_state), out
+    
+    def check_reallocate(self, state, inputs, parent_overflow=False):
+        return state, {}, inputs, parent_overflow
+    
+    @partial(jax.jit, static_argnums=(0, 1))
+    def process(self, state, inputs):
+        assert (
+            self.graph_key in inputs
+        ), f"External Graph {self.graph_key} must be provided on accelerator. Call the numpy routine (self.__call__) first."
 
-        return out, state
+        return inputs
 
-    def get_processor(self) -> Tuple[nn.Module, Dict]:
-        """Get the graph processor module and its parameters.
+    @partial(jax.jit, static_argnums=(0,))
+    def update_skin(self, inputs):
+        return self.process(None, inputs)
 
-        Returns
-        -------
-        Tuple[nn.Module, Dict]
-            The graph processor module and its parameters.
-        """
-        return GraphProcessor, {
-            "cutoff": self.cutoff,
-            "graph_key": self.graph_key,
-            "switch_params": {},
-            "name": f"{self.graph_key}_Processor",
-        }
 
-    def get_updater(self) -> Tuple[nn.Module, Dict]:
-        """Update of the graph for the MD simulation.
-
-        Returns
-        -------
-        Tuple[nn.Module, Dict]
-            None as the updater is not implemented.
-
-        Raises
-        ------
-        NotImplementedError
-            Update is not implemented for the external graph.
-        """
-
-        raise NotImplementedError("Update is not implemented for the external graph.")
-
-    def get_graph_properties(self):
-        """Get the graph properties.
-
-        Returns
-        -------
-        Dict
-            The graph properties.
-        """
-        return {
-            self.graph_key: {
-                "cutoff": self.cutoff,
-                "directed": True,
-                'external': True
-            }
-        }
 
 class GraphProcessor(nn.Module):
     """ Process a pre-generated graph 
