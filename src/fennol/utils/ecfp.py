@@ -3,8 +3,7 @@
 
 import numpy as np
 
-#from .periodic_table import ATOMIC_MASSES
-from fennol.utils.periodic_table import ATOMIC_MASSES
+from .periodic_table import ATOMIC_MASSES
 
 def get_hash(list):
     """Get hash of a list."""
@@ -134,6 +133,8 @@ def ecfp(
             atom_new_identifier = []
             atom_new_identifier.append((layer, identifiers[i]))
             for j, neighbor in enumerate(atom):
+                if neighbor == -1:
+                    break
                 atom_new_identifier.append((bond_order[i, j], identifiers[neighbor]))
             new_identifiers.append(get_hash(atom_new_identifier))
         identifiers = new_identifiers
