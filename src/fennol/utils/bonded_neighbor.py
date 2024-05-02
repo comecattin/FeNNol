@@ -187,13 +187,21 @@ def get_edge_list(smiles, max_neighbor=3, padding=4):
 
     edge_src = []
     edge_dst = []
+    
+    # Possible bond order are:
+    #     0 for BO = 1
+    #     1 for BO = 1.5
+    #     2 for BO = 2
+    #     4 for BO = 3
+    #     3 for 1-3 bond
+    #     5 for 1-4 bond 
     bond_order = []
 
     # 1-2 interaction
     for bond in mol.GetBonds():
         edge_src.append(bond.GetBeginAtomIdx())
         edge_dst.append(bond.GetEndAtomIdx())
-        bond_order.append(bond.GetBondTypeAsDouble())
+        bond_order.append(int(2 * bond.GetBondTypeAsDouble() - 2))
         n_12, i_12 = get_first_neighbor(n_atom, edge_src, edge_dst, padding)
     
     # 1-3 interaction
@@ -206,7 +214,7 @@ def get_edge_list(smiles, max_neighbor=3, padding=4):
         edge_dst_13 = edge_dst_13[mask]
         edge_src.extend(edge_src_13)
         edge_dst.extend(edge_dst_13)
-        bond_order.extend([-2.0] * len(edge_src_13))
+        bond_order.extend([3] * len(edge_src_13))
     
     # 1-4 interaction
     if max_neighbor >= 3:
@@ -218,7 +226,7 @@ def get_edge_list(smiles, max_neighbor=3, padding=4):
         edge_dst_14 = edge_dst_14[mask]
         edge_src.extend(edge_src_14)
         edge_dst.extend(edge_dst_14)
-        bond_order.extend([-3.0] * len(edge_src_14))
+        bond_order.extend([5] * len(edge_src_14))
 
     edge_index_out = np.column_stack((edge_src, edge_dst))
 
