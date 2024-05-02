@@ -626,7 +626,7 @@ class GraphExternal:
             out = {**inputs, self.graph_key: graph}
             # Additional keys
             for key in self.additional_keys:
-                out[key] = np.array([], dtype=np.float32)
+                out[key] = np.array([], dtype=np.int32)
             if return_state_update:
                 return FrozenDict(state), out, {}
             return state, out
@@ -717,6 +717,7 @@ class GraphExternal:
                 "overflow": False,
             },
         }
+        del out[self.edge_key]
 
         # Additional keys to be padded
         for key in self.additional_keys:
