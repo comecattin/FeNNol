@@ -161,7 +161,7 @@ def bonded_order_sparse_to_dense(bond_order, edge_src, edge_dst, n_atom):
         bond_order_dense[j, i] = bo
     return bond_order_dense
 
-def get_edge_list(smiles, max_neighbor=3, padding=4):
+def get_edge_list(smiles=None, xyz=None , max_neighbor=3, padding=4):
     """Get the edge list of the molecule.
     
     Parameters
@@ -180,9 +180,14 @@ def get_edge_list(smiles, max_neighbor=3, padding=4):
     """
     if max_neighbor > 3:
         raise NotImplementedError("Only support up to 3rd neighbor (1-4 interaction).")
-
-    raw_mol = Chem.MolFromSmiles(smiles)
+    if smiles is not None:
+        raw_mol = Chem.MolFromSmiles(smiles)
+    elif xyz is not None:
+        raw_mol = Chem.MolFromXYZFile(xyz)
+    else:
+        raise ValueError("Either SMILES or XYZ must be provided.")
     mol = Chem.Mol(raw_mol)
+    rdDetermineBonds.DetermineBonds(mol, charge=0)
     n_atom = mol.GetNumAtoms()
 
     edge_src = []
