@@ -737,7 +737,7 @@ class GraphExternal:
 
             else:
                 raise ValueError(
-                    f"Shape mismatch for {key}: {value.shape[0]}"
+                    f"Shape mismatch for {key}: {value.shape[0]} not in {edge_index.shape[0]} or {coords.shape[0]}."
                 )
         if return_state_update:
             return FrozenDict(new_state), out, state_up
