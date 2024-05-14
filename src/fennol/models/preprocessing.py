@@ -633,11 +633,10 @@ class GraphExternal:
 
         # Get input graph information
         edge_index = inputs[self.edge_key]
-        edge_src = edge_index[:, 0]
-        mask = (edge_src >= 0).nonzero()[0]
-        edge_src = edge_src[mask]
-        edge_dst = edge_index[:, 1]
-        edge_dst = edge_dst[mask]
+        mask = edge_index[:,0] >= 0
+        edge_index_masked = edge_index[mask,:]
+        edge_src = edge_index_masked[:, 0]
+        edge_dst = edge_index_masked[:, 1]
         coords = inputs["coordinates"]
         batch_index = inputs["batch_index"]
         natoms = inputs["natoms"]
@@ -706,9 +705,15 @@ class GraphExternal:
             pbc_shifts_[:pbc_shifts.shape[0]] = pbc_shifts
             pbc_shifts = pbc_shifts_
 
+        # Pad the edge_index
+        edge_index_ = np.full((prev_nblist_size_, 2), -1, dtype=np.int32)
+        edge_index_[:edge_index_masked.shape[0]] = edge_index_masked
+
+
         # Prepare the output
         out = {
             **inputs,
+            self.edge_key: edge_index_,
             self.graph_key: {
                 "edge_src": edge_src,
                 "edge_dst": edge_dst,
@@ -717,7 +722,6 @@ class GraphExternal:
                 "overflow": False,
             },
         }
-        del out[self.edge_key]
 
         # Additional keys to be padded
         for key in self.additional_keys:
