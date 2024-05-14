@@ -43,8 +43,15 @@ class AllegroBond(nn.Module):
         switch = graph["switch"][:, None]
         edge_src, edge_dst = graph["edge_src"], graph["edge_dst"]
         cutoff = self._graphs_properties[self.graph_key]["cutoff"]
-        bond_order = inputs[self.bond_order_key].reshape(-1, self.n_bonds_type)
-        ecfp_encoding = inputs[self.ecfp_key].reshape(-1, self.ecfp_dim)
+        
+        # Topological information
+        if self.is_initializing():
+            ecfp = jnp.zeros((species.shape[0], self.ecfp_dim))
+        else:
+            ecfp = inputs[self.ecfp_key].reshape(-1, self.ecfp_dim)
+        bond_order = inputs[self.bond_order_key]
+        weights_bond_order = jnp.array([1, 1.5, 2, 0.5, 3, 0.25])
+        bond_order = weights_bond_order[bond_order]
 
         onehot = SpeciesEncoding(**self.species_encoding, name="SpeciesEncoding")(
             species
@@ -71,8 +78,8 @@ class AllegroBond(nn.Module):
             (
                 onehot[edge_src], onehot[edge_dst],
                 radial_basis,
-                bond_order,
-                ecfp_encoding[edge_src], ecfp_encoding[edge_dst]
+                bond_order[:, None],
+                ecfp[edge_src], ecfp[edge_dst]
             ),
             axis=-1
         )
@@ -158,7 +165,7 @@ class AllegroBond(nn.Module):
             self.embedding_key: x_ij,
             "radial_basis": radial_basis,
             "bond_order": bond_order,
-            "ECFP": ecfp_encoding,
+            "ECFP": ecfp,
         }
         return output
 
