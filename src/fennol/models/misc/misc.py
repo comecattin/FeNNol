@@ -1,10 +1,9 @@
 import flax.linen as nn
-from typing import Any, Sequence, Callable, Union
+from typing import Any, Sequence, Callable, Union, ClassVar,Optional,Dict, List
 import jax.numpy as jnp
 import jax
 import numpy as np
 from functools import partial
-from typing import Optional, Tuple, Dict, List, Union
 from ...utils.activations import activation_from_str
 from ...utils.periodic_table import (
     CHEMICAL_PROPERTIES,
@@ -14,6 +13,7 @@ from ...utils.periodic_table import (
 
 
 def apply_switch(x: jax.Array, switch: jax.Array):
+    """@private Multiply a switch array to an array of values."""
     shape = x.shape
 
     return (
@@ -22,12 +22,21 @@ def apply_switch(x: jax.Array, switch: jax.Array):
 
 
 class ApplySwitch(nn.Module):
-    key: str
-    switch_key: Optional[str] = None
-    graph_key: Optional[str] = None
-    output_key: Optional[str] = None
+    """Multiply an edge array by a switch array.
+    
+    FID: APPLY_SWITCH
+    """
 
-    FID: str = "APPLY_SWITCH"
+    key: str
+    """The key of the input array."""
+    switch_key: Optional[str] = None
+    """The key of the switch array."""
+    graph_key: Optional[str] = None
+    """The key of the graph containing the switch."""
+    output_key: Optional[str] = None
+    """The key of the output array. If None, the input key is used."""
+
+    FID: ClassVar[str] = "APPLY_SWITCH"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -45,15 +54,29 @@ class ApplySwitch(nn.Module):
         return {**inputs, output_key: output}
 
 class AtomToEdge(nn.Module):
+    """Map atom-wise values to edge-wise values.
+
+    FID: ATOM_TO_EDGE
+    
+    By default, we map the destination atom value to the edge. This can be changed by setting `use_source` to True.
+    """
+
     _graphs_properties: Dict
     key: str
+    """The key of the input atom-wise array."""
     output_key: Optional[str] = None
+    """The key of the output edge-wise array. If None, the input key is used."""
     graph_key: str = "graph"
+    """The key of the graph containing the edges."""
     switch: bool = False
+    """Whether to apply a switch to the edge values."""
     switch_key: Optional[str] = None
+    """The key of the switch array. If None, the switch is taken from the graph."""
     use_source: bool = False
+    """Whether to use the source atom value instead of the destination atom value."""
 
-    FID: str = "ATOM_TO_EDGE"
+
+    FID: ClassVar[str] = "ATOM_TO_EDGE"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -77,14 +100,24 @@ class AtomToEdge(nn.Module):
         return {**inputs, output_key: x_edge}
 
 class ScatterEdges(nn.Module):
+    """ Reduce an edge array to atoms by summing over neighbors.
+    
+    FID: SCATTER_EDGES
+    """
+
     _graphs_properties: Dict
     key: str
+    """The key of the input edge-wise array."""
     output_key: Optional[str] = None
+    """The key of the output atom-wise array. If None, the input key is used."""
     graph_key: str = "graph"
+    """The key of the graph containing the edges."""
     switch: bool = False
+    """Whether to apply a switch to the edge values before summing."""
     switch_key: Optional[str] = None
+    """The key of the switch array. If None, the switch is taken from the graph."""
 
-    FID: str = "SCATTER_EDGES"
+    FID: ClassVar[str] = "SCATTER_EDGES"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -106,15 +139,26 @@ class ScatterEdges(nn.Module):
         return {**inputs, output_key: output}
 
 class EdgeConcatenate(nn.Module):
+    """Concatenate the source and destination atom values of an edge.
+    
+    FID: EDGE_CONCATENATE
+    """
+
     _graphs_properties: Dict
     key: str
+    """The key of the input atom-wise array."""
     output_key: Optional[str] = None
+    """The key of the output edge-wise array. If None, the input key is used."""
     graph_key: str = "graph"
+    """The key of the graph containing the edges."""
     switch: bool = False
+    """Whether to apply a switch to the edge values."""
     switch_key: Optional[str] = None
+    """The key of the switch array. If None, the switch is taken from the graph."""
     axis: int = -1
+    """The axis along which to concatenate the atom values."""
     
-    FID: str = "EDGE_CONCATENATE"
+    FID: ClassVar[str] = "EDGE_CONCATENATE"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -138,10 +182,16 @@ class EdgeConcatenate(nn.Module):
         return {**inputs, output_key: xij}
 
 class ScatterSystem(nn.Module):
+    """Reduce an atom-wise array to a system-wise array by summing over atoms (in the batch).
+    
+    FID: SCATTER_SYSTEM
+    """
     key: str
+    """The key of the input atom-wise array."""
     output_key: Optional[str] = None
+    """The key of the output system-wise array. If None, the input key is used."""
 
-    FID: str = "SCATTER_SYSTEM"
+    FID: ClassVar[str] = "SCATTER_SYSTEM"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -158,12 +208,21 @@ class ScatterSystem(nn.Module):
 
 
 class SumAxis(nn.Module):
-    key: str
-    axis: Union[None, int, Sequence[int]] = None
-    output_key: Optional[str] = None
-    norm: Optional[str] = None
+    """Sum an array along an axis.
+    
+    FID: SUM_AXIS
+    """
 
-    FID: str = "SUM_AXIS"
+    key: str
+    """The key of the input array."""
+    axis: Union[None, int, Sequence[int]] = None
+    """The axis along which to sum the array."""
+    output_key: Optional[str] = None
+    """The key of the output array. If None, the input key is used."""
+    norm: Optional[str] = None
+    """Normalization of the sum. Can be 'dim', 'sqrt', or 'none'."""
+
+    FID: ClassVar[str] = "SUM_AXIS"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -184,13 +243,23 @@ class SumAxis(nn.Module):
 
 
 class Split(nn.Module):
-    key: str
-    output_keys: Sequence[str]
-    axis: int = -1
-    sizes: Union[int, Sequence[int]] = 1
-    squeeze: bool = True
+    """Split an array along an axis.
+    
+    FID: SPLIT
+    """
 
-    FID: str = "SPLIT"
+    key: str
+    """The key of the input array."""
+    output_keys: Sequence[str]
+    """The keys of the output arrays."""
+    axis: int = -1
+    """The axis along which to split the array."""
+    sizes: Union[int, Sequence[int]] = 1
+    """The sizes of the splits."""
+    squeeze: bool = True
+    """Whether to remove the axis in the output if the size is 1."""
+
+    FID: ClassVar[str] = "SPLIT"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -221,11 +290,19 @@ class Split(nn.Module):
         return {**inputs, **outs}
 
 class Concatenate(nn.Module):
-    keys: Sequence[str]
-    axis: int = -1
-    output_key: Optional[str] = None
+    """Concatenate a list of arrays along an axis.
+    
+    FID: CONCATENATE
+    """
 
-    FID: str = "CONCATENATE"
+    keys: Sequence[str]
+    """The keys of the input arrays."""
+    axis: int = -1
+    """The axis along which to concatenate the arrays."""
+    output_key: Optional[str] = None
+    """The key of the output array. If None, the name of the module is used."""
+
+    FID: ClassVar[str] = "CONCATENATE"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -235,13 +312,23 @@ class Concatenate(nn.Module):
 
 
 class Activation(nn.Module):
+    """Apply an element-wise activation function to an array.
+    
+    FID: ACTIVATION
+    """
+    
     key: str
+    """The key of the input array."""
     activation: Union[Callable, str]
+    """The activation function or its name."""
     scale_out: float = 1.0
+    """Output scaling factor."""
     shift_out: float = 0.0
+    """Output shift."""
     output_key: Optional[str] = None
+    """The key of the output array. If None, the input key is used."""
 
-    FID: str = "ACTIVATION"
+    FID: ClassVar[str] = "ACTIVATION"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -257,12 +344,21 @@ class Activation(nn.Module):
 
 
 class Scale(nn.Module):
-    key: str
-    scale: float
-    output_key: Optional[str] = None
-    trainable: bool = False
+    """Scale an array by a constant factor.
+    
+    FID: SCALE
+    """
 
-    FID: str = "SCALE"
+    key: str
+    """The key of the input array."""
+    scale: float
+    """The (initial) scaling factor."""
+    output_key: Optional[str] = None
+    """The key of the output array. If None, the input key is used."""
+    trainable: bool = False
+    """Whether the scaling factor is trainable."""
+
+    FID: ClassVar[str] = "SCALE"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -279,10 +375,17 @@ class Scale(nn.Module):
 
 
 class Add(nn.Module):
-    keys: Sequence[str]
-    output_key: Optional[str] = None
+    """ Add together a list of arrays.
+    
+    FID: ADD
+    """
 
-    FID: str = "ADD"
+    keys: Sequence[str]
+    """The keys of the input arrays."""
+    output_key: Optional[str] = None
+    """The key of the output array. If None, the name of the module is used."""
+
+    FID: ClassVar[str] = "ADD"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -295,10 +398,17 @@ class Add(nn.Module):
 
 
 class Multiply(nn.Module):
-    keys: Sequence[str]
-    output_key: Optional[str] = None
+    """Element-wise-multiply together a list of arrays.
+    
+    FID: MULTIPLY
+    """
 
-    FID: str = "MULTIPLY"
+    keys: Sequence[str]
+    """The keys of the input arrays."""
+    output_key: Optional[str] = None
+    """The key of the output array. If None, the name of the module is used."""
+
+    FID: ClassVar[str] = "MULTIPLY"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -310,11 +420,19 @@ class Multiply(nn.Module):
         return {**inputs, output_key: output}
 
 class Transpose(nn.Module):
-    key: str
-    axes: Sequence[int] 
-    output_key: Optional[str] = None
+    """Transpose an array.
+    
+    FID: TRANSPOSE
+    """
 
-    FID: str = "TRANSPOSE"
+    key: str
+    """The key of the input array."""
+    axes: Sequence[int] 
+    """The permutation of the axes. See `jax.numpy.transpose` for more details."""
+    output_key: Optional[str] = None
+    """The key of the output array. If None, the input key is used."""
+
+    FID: ClassVar[str] = "TRANSPOSE"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -323,11 +441,19 @@ class Transpose(nn.Module):
         return {**inputs, output_key: output}
 
 class Reshape(nn.Module):
-    key: str
-    shape: Sequence[int]
-    output_key: Optional[str] = None
+    """Reshape an array.
+    
+    FID: RESHAPE
+    """
 
-    FID: str = "RESHAPE"
+    key: str
+    """The key of the input array."""
+    shape: Sequence[int]
+    """The shape of the output array."""
+    output_key: Optional[str] = None
+    """The key of the output array. If None, the input key is used."""
+
+    FID: ClassVar[str] = "RESHAPE"
 
     @nn.compact
     def __call__(self, inputs) -> Any:
@@ -336,11 +462,19 @@ class Reshape(nn.Module):
         return {**inputs, output_key: output}
 
 class ChemicalConstant(nn.Module):
-    value: Union[str, List[float], float, Dict]
-    output_key: Optional[str] = None
-    trainable: bool = False
+    """Map atomic species to a constant value.
+    
+    FID: CHEMICAL_CONSTANT
+    """
 
-    FID: str = "CHEMICAL_CONSTANT"
+    value: Union[str, List[float], float, Dict]
+    """The constant value or a dictionary of values for each element."""
+    output_key: Optional[str] = None
+    """The key of the output array. If None, the name of the module is used."""
+    trainable: bool = False
+    """Whether the constant is trainable."""
+
+    FID: ClassVar[str] = "CHEMICAL_CONSTANT"
 
 
     @nn.compact
@@ -370,15 +504,27 @@ class ChemicalConstant(nn.Module):
 
 
 class SwitchFunction(nn.Module):
-    cutoff: Optional[float] = None
-    switch_start: float = 0.0
-    graph_key: Optional[str] = "graph"
-    output_key: Optional[str] = None
-    switch_type: str = "cosine"
-    p: Optional[float] = None
-    trainable: bool = False
+    """Compute a switch array from an array of distances and a cutoff.
+    
+    FID: SWITCH_FUNCTION
+    """
 
-    FID: str = "SWITCH_FUNCTION"
+    cutoff: Optional[float] = None
+    """The cutoff distance. If None, the cutoff is taken from the graph."""
+    switch_start: float = 0.0
+    """The distance at which the switch function starts."""
+    graph_key: Optional[str] = "graph"
+    """The key of the graph containing the distances and edge mask."""
+    output_key: Optional[str] = None
+    """The key of the output switch array. If None, it is added to the graph."""
+    switch_type: str = "cosine"
+    """The type of switch function. Can be 'cosine', 'polynomial', or 'exponential'."""
+    p: Optional[float] = None
+    """ The parameter of the switch function. If None, it is fixed to the default for each `switch_type`."""
+    trainable: bool = False
+    """Whether the switch parameter is trainable."""
+
+    FID: ClassVar[str] = "SWITCH_FUNCTION"
 
 
     @nn.compact
