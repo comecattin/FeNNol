@@ -161,7 +161,7 @@ def bonded_order_sparse_to_dense(bond_order, edge_src, edge_dst, n_atom):
         bond_order_dense[j, i] = bo
     return bond_order_dense
 
-def get_edge_list(smiles=None, xyz=None , max_neighbor=3, padding=4):
+def get_edge_list(smiles=None, xyz=None, max_neighbor=3, padding=4):
     """Get the edge list of the molecule.
     
     Parameters
