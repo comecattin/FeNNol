@@ -85,6 +85,11 @@ class ANIAEVBOND(nn.Module):
         bond_order = inputs[self.bond_order_key]
         weights_bond_order = jnp.array([1, 1.5, 2, 0.5, 3, 0.25])
         bond_order = weights_bond_order[bond_order]
+        bond_order = jnp.where(
+            bond_order[:,None]>=1,
+            jnp.array([1,0]),
+            jnp.array([0,1])
+        )
 
         # convert species to internal indices
         conv_tensor = [0] * (maxidx + 2)
@@ -115,10 +120,11 @@ class ANIAEVBOND(nn.Module):
         )
         x2 = self.radial_eta * (distances[:, None] - shiftR) ** 2
         radial_terms = 0.25 * jnp.exp(-x2) * switch[:, None]
-        radial_terms = radial_terms * bond_order[:, None]
+        radial_terms = radial_terms[:, :, None] * bond_order[:, None, :]
+        
         radial_aev_shape = (
             species.shape[0],
-            num_species * radial_terms.shape[-1],
+            num_species**2 * radial_terms.shape[-1]**2 * bond_order.shape[-1],
         )
         # aggregate radial AEV
         radial_index = edge_src * num_species + indices[edge_dst]
@@ -127,7 +133,6 @@ class ANIAEVBOND(nn.Module):
             radial_index,
             num_species * species.shape[0]
         ).reshape(radial_aev_shape)
-        radial_aev = jnp.concatenate((radial_aev, ecfp), axis=-1)
 
         # Angular graph
         graph = inputs[self.graph_angle_key]
@@ -180,7 +185,8 @@ class ANIAEVBOND(nn.Module):
             angular_terms, angular_index, num_species_pair * species.shape[0]
         ).reshape(species.shape[0], num_species_pair * angular_terms.shape[-1])
 
-        embedding = jnp.concatenate((radial_aev, angular_aev), axis=-1)
+
+        embedding = jnp.concatenate((ecfp, radial_aev, angular_aev), axis=-1)
         if self.embedding_key is None:
             return embedding
         return {**inputs, self.embedding_key: embedding}
