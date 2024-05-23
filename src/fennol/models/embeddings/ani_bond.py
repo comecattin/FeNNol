@@ -81,15 +81,25 @@ class ANIAEVBOND(nn.Module):
         if self.is_initializing():
             ecfp = jnp.zeros((species.shape[0], self.ecfp_dim))
         else:
-            ecfp = inputs[self.ecfp_key].reshape(-1, self.ecfp_dim)
-        bond_order = inputs[self.bond_order_key]
-        weights_bond_order = jnp.array([1, 1.5, 2, 0.5, 3, 0.25])
-        bond_order = weights_bond_order[bond_order]
-        bond_order = jnp.where(
-            bond_order[:,None]>=1,
-            jnp.array([1,0]),
-            jnp.array([0,1])
-        )
+            if self.ecfp_key == 'None':
+                ecfp = jnp.zeros((species.shape[0], self.ecfp_dim))
+            else:
+                ecfp = inputs[self.ecfp_key].reshape(-1, self.ecfp_dim)
+
+        if self.bond_order_key == 'None':
+            graph = inputs[self.graph_key]
+            edge_src = graph["edge_src"]
+            bond_order = jnp.zeros((edge_src.shape[0], 2))
+        
+        else:
+            bond_order = inputs[self.bond_order_key]
+            weights_bond_order = jnp.array([1, 1.5, 2, 0.5, 3, 0.25])
+            bond_order = weights_bond_order[bond_order]
+            bond_order = jnp.where(
+                bond_order[:,None]>=1,
+                jnp.array([1,0]),
+                jnp.array([0,1])
+            )
 
         # convert species to internal indices
         conv_tensor = [0] * (maxidx + 2)
