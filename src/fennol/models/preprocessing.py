@@ -23,34 +23,26 @@ from ..utils.periodic_table import PERIODIC_TABLE, PERIODIC_TABLE_REV_IDX
 class GraphGenerator:
     """Generate a graph from a set of coordinates
 
+    FID: GRAPH
+
     For now, we generate all pairs of atoms and filter based on cutoff.
     If a `nblist_skin` is present in the state, we generate a second graph with a larger cutoff that includes all pairs within the cutoff+skin. This graph is then reused by the `update_skin` method to update the original graph without recomputing the full nblist.
-
-    Parameters
-    ----------
-    cutoff : float
-        Cutoff distance for the graph.
-    graph_key : str, default="graph"
-        Key of the graph in the outputs.
-    switch_params : dict, default={}
-        Parameters for the switching function.
-    k_space : bool, default=False
-        Generate k-space information for the graph.
-    kmax : int, default=30
-        Maximum number of k-points to consider.
-    kthr : float, default=1e-6
-        Threshold for k-point filtering.
-    mult_size : float, default=1.05
-        Multiplicative factor for resizing the nblist.
     """
 
     cutoff: float
+    """Cutoff distance for the graph."""
     graph_key: str = "graph"
+    """Key of the graph in the outputs."""
     switch_params: dict = dataclasses.field(default_factory=dict, hash=False)
+    """Parameters for the switching function. See `fennol.models.misc.misc.SwitchFunction`."""
     kmax: int = 30
+    """Maximum number of k-points to consider."""
     kthr: float = 1e-6
+    """Threshold for k-point filtering."""
     k_space: bool = False
+    """Whether to generate k-space information for the graph."""
     mult_size: float = 1.05
+    """Multiplicative factor for resizing the nblist."""
     # covalent_cutoff: bool = False
 
     def init(self):
@@ -83,11 +75,11 @@ class GraphGenerator:
         if self.graph_key in inputs:
             graph = inputs[self.graph_key]
             if "keep_graph" in graph:
-                return state,inputs
-            
-        coords = np.array(inputs["coordinates"],dtype=np.float32)
-        natoms = np.array(inputs["natoms"],dtype=np.int32)
-        batch_index = np.array(inputs["batch_index"],dtype=np.int32)
+                return state, inputs
+
+        coords = np.array(inputs["coordinates"], dtype=np.float32)
+        natoms = np.array(inputs["natoms"], dtype=np.int32)
+        batch_index = np.array(inputs["batch_index"], dtype=np.int32)
 
         new_state = {**state}
         state_up = {}
@@ -110,7 +102,7 @@ class GraphGenerator:
                 (p1[None, :] < natoms[:, None]) * (p2[None, :] < natoms[:, None])
             ).flatten()
             shift = np.concatenate(
-                (np.array([0], dtype=np.int32), np.cumsum(natoms[:-1],dtype=np.int32))
+                (np.array([0], dtype=np.int32), np.cumsum(natoms[:-1], dtype=np.int32))
             )
             p1 = np.where(mask_p12, (p1[None, :] + shift[:, None]).flatten(), -1)
             p2 = np.where(mask_p12, (p2[None, :] + shift[:, None]).flatten(), -1)
@@ -120,8 +112,8 @@ class GraphGenerator:
             ### NO PBC
             vec = coords[p2] - coords[p1]
         else:
-            cells = np.array(inputs["cells"],dtype=np.float32)
-            reciprocal_cells = np.array(inputs["reciprocal_cells"],dtype=np.float32)
+            cells = np.array(inputs["cells"], dtype=np.float32)
+            reciprocal_cells = np.array(inputs["reciprocal_cells"], dtype=np.float32)
             minimage = state.get("minimum_image", True)
             if minimage:
                 ## MINIMUM IMAGE CONVENTION
@@ -131,9 +123,14 @@ class GraphGenerator:
                     pbc_shifts = -np.round(vecpbc)
                     vec = vec + np.dot(pbc_shifts, cells[0])
                 else:
-                    vecpbc = np.einsum("aj,aji->ai", vec, reciprocal_cells[batch_index_vec])
+                    batch_index_vec = batch_index[p1]
+                    vecpbc = np.einsum(
+                        "aj,aji->ai", vec, reciprocal_cells[batch_index_vec]
+                    )
                     pbc_shifts = -np.round(vecpbc)
-                    vec = vec + np.einsum("aj,aji->ai", pbc_shifts, cells[batch_index_vec])
+                    vec = vec + np.einsum(
+                        "aj,aji->ai", pbc_shifts, cells[batch_index_vec]
+                    )
             else:
                 ### GENERAL PBC
                 ## put all atoms in central box
@@ -142,13 +139,19 @@ class GraphGenerator:
                     at_shifts = -np.floor(coords_pbc)
                     coords_pbc = coords + np.dot(at_shifts, cells[0])
                 else:
-                    coords_pbc = np.einsum("aj,aji->ai", coords, reciprocal_cells[batch_index])
+                    coords_pbc = np.einsum(
+                        "aj,aji->ai", coords, reciprocal_cells[batch_index]
+                    )
                     at_shifts = -np.floor(coords_pbc)
-                    coords_pbc = coords + np.einsum("aj,aji->ai", at_shifts, cells[batch_index])
+                    coords_pbc = coords + np.einsum(
+                        "aj,aji->ai", at_shifts, cells[batch_index]
+                    )
 
                 ## compute maximum number of repeats
                 inv_distances = (np.sum(reciprocal_cells**2, axis=1)) ** 0.5
-                num_repeats_all = np.ceil(cutoff_skin * inv_distances).astype(np.int32)
+                cdinv = cutoff_skin * inv_distances
+                num_repeats_all = np.ceil(cdinv).astype(np.int32)
+                # num_repeats_all = np.where(cdinv < 0.5, 0, num_repeats_all)
                 num_repeats = np.max(num_repeats_all, axis=0)
                 num_repeats_prev = np.array(state.get("num_repeats_pbc", (0, 0, 0)))
                 if np.any(num_repeats > num_repeats_prev):
@@ -161,15 +164,13 @@ class GraphGenerator:
                 ## build all possible shifts
                 cell_shift_pbc = np.array(
                     np.meshgrid(*[np.arange(-n, n + 1) for n in num_repeats])
-                ).T.reshape(-1, 3)
+                ,dtype=cells.dtype).T.reshape(-1, 3)
                 ## shift applied to vectors
                 if cells.shape[0] == 1:
                     dvec = np.dot(cell_shift_pbc, cells[0])[None, :, :]
                 else:
                     batch_index_vec = batch_index[p1]
-                    dvec = np.einsum("bj,sji->sbi", cell_shift_pbc,cells)[
-                        batch_index_vec
-                    ]
+                    dvec = np.einsum("bj,sji->sbi", cell_shift_pbc, cells)[batch_index_vec]
                 ## compute vectors
                 vec = (
                     coords_pbc[p2, None, :] - coords_pbc[p1, None, :] + dvec
@@ -774,19 +775,14 @@ class GraphProcessor(nn.Module):
 
     This module is automatically added to a FENNIX model when a GraphGenerator is used.
 
-    Parameters
-    ----------
-    cutoff : float
-        Cutoff distance for the graph.
-    graph_key : str
-        Key of the graph in the inputs.
-    switch_params : dict, default={}
-        Parameters for the switching function.
     """
 
     cutoff: float
+    """Cutoff distance for the graph."""
     graph_key: str = "graph"
+    """Key of the graph in the outputs."""
     switch_params: dict = dataclasses.field(default_factory=dict)
+    """Parameters for the switching function. See `fennol.models.misc.misc.SwitchFunction`."""
 
     @nn.compact
     def __call__(self, inputs: Union[dict, Tuple[jax.Array, dict]]):
@@ -803,7 +799,9 @@ class GraphProcessor(nn.Module):
                 vec = vec + jnp.dot(graph["pbc_shifts"], cells[0])
             else:
                 batch_index_vec = inputs["batch_index"][edge_src]
-                vec = vec + jax.vmap(jnp.dot)(graph["pbc_shifts"], cells[batch_index_vec])
+                vec = vec + jax.vmap(jnp.dot)(
+                    graph["pbc_shifts"], cells[batch_index_vec]
+                )
 
         distances = jnp.linalg.norm(vec, axis=-1)
         edge_mask = distances < self.cutoff
@@ -826,37 +824,27 @@ class GraphProcessor(nn.Module):
 class GraphFilter:
     """Filter a graph based on a cutoff distance
 
-    Parameters
-    ----------
-    cutoff : float
-        Cutoff distance for the filtering.
-    parent_graph : str
-        Key of the parent graph in the inputs.
-    graph_key : str
-        Key of the filtered graph in the outputs.
-    remove_hydrogens : bool, default=False
-        Remove hydrogen atoms from the graph.
-    switch_params : dict, default={}
-        Parameters for the switching function.
-    k_space : bool, default=False
-        Generate k-space information for the graph.
-    kmax : int, default=30
-        Maximum number of k-points to consider.
-    kthr : float, default=1e-6
-        Threshold for k-point filtering.
-    mult_size : float, default=1.05
-        Multiplicative factor for resizing the nblist.
+    FID: GRAPH_FILTER
     """
 
     cutoff: float
+    """Cutoff distance for the filtering."""
     parent_graph: str
+    """Key of the parent graph in the inputs."""
     graph_key: str
+    """Key of the filtered graph in the outputs."""
     remove_hydrogens: int = False
+    """Remove edges where the source is a hydrogen atom."""
     switch_params: FrozenDict = dataclasses.field(default_factory=FrozenDict)
+    """Parameters for the switching function. See `fennol.models.misc.misc.SwitchFunction`."""
     k_space: bool = False
+    """Generate k-space information for the graph."""
     kmax: int = 30
+    """Maximum number of k-points to consider."""
     kthr: float = 1e-6
+    """Threshold for k-point filtering."""
     mult_size: float = 1.05
+    """Multiplicative factor for resizing the nblist."""
 
     def init(self):
         return FrozenDict(
@@ -1016,24 +1004,16 @@ class GraphFilterProcessor(nn.Module):
     """Filter processing for a pre-generated graph
 
     This module is automatically added to a FENNIX model when a GraphFilter is used.
-
-    Parameters
-    ----------
-    cutoff : float
-        Cutoff distance for the filtering.
-    graph_key : str
-        Key of the filtered graph in the inputs.
-    parent_graph : str
-        Key of the parent graph in the inputs.
-    switch_params : dict, default={}
-        Parameters for the switching function.
-
     """
 
     cutoff: float
+    """Cutoff distance for the filtering."""
     graph_key: str
+    """Key of the filtered graph in the inputs."""
     parent_graph: str
+    """Key of the parent graph in the inputs."""
     switch_params: dict = dataclasses.field(default_factory=dict)
+    """Parameters for the switching function. See `fennol.models.misc.misc.SwitchFunction`."""
 
     @nn.compact
     def __call__(self, inputs: Union[dict, Tuple[jax.Array, dict]]):
@@ -1077,19 +1057,15 @@ class GraphFilterProcessor(nn.Module):
 class GraphAngularExtension:
     """Add angles list to a graph
 
-    Parameters
-    ----------
-    mult_size : float, default=1.05
-        Multiplicative factor for resizing the nblist.
-    add_neigh : int, default=5
-        Additional neighbors to add to the nblist when resizing.
-    graph_key : str, default="graph"
-        Key of the graph in the inputs.
+    FID: GRAPH_ANGULAR_EXTENSION
     """
 
     mult_size: float = 1.05
+    """Multiplicative factor for resizing the nblist."""
     add_neigh: int = 5
+    """Additional neighbors to add to the nblist when resizing."""
     graph_key: str = "graph"
+    """Key of the graph in the inputs."""
 
     def init(self):
         return FrozenDict(
@@ -1253,7 +1229,9 @@ class GraphAngularExtension:
         ### map sparse to dense nblist
         if max_neigh * nat < nedge:
             raise ValueError("Found max_neigh*nat < nedge. This should not happen.")
-        offset = jnp.asarray(np.tile(np.arange(max_neigh), nat)[:nedge], dtype=jnp.int32)
+        offset = jnp.asarray(
+            np.tile(np.arange(max_neigh), nat)[:nedge], dtype=jnp.int32
+        )
         # offset = jnp.where(edge_src_sorted < nat, offset, 0)
         indices = edge_src_sorted * max_neigh + offset
         edge_idx = (
@@ -1314,13 +1292,10 @@ class GraphAngleProcessor(nn.Module):
 
     This module is automatically added to a FENNIX model when a GraphAngularExtension is used.
 
-    Parameters
-    ----------
-    graph_key : str
-        Key of the graph in the inputs.
     """
 
     graph_key: str
+    """Key of the graph in the inputs."""
 
     @nn.compact
     def __call__(self, inputs: Union[dict, Tuple[jax.Array, dict]]):
@@ -1330,12 +1305,12 @@ class GraphAngleProcessor(nn.Module):
         angle_src = graph["angle_src"]
         angle_dst = graph["angle_dst"]
 
-        d1 = distances.at[angle_src].get(mode="fill", fill_value=1.0)
-        d2 = distances.at[angle_dst].get(mode="fill", fill_value=1.0)
-        vec1 = vec.at[angle_src].get(mode="fill", fill_value=1.0)
-        vec2 = vec.at[angle_dst].get(mode="fill", fill_value=0.0)
+        dir = vec / jnp.clip(distances[:, None], a_min=1.0e-5)
+        cos_angles = (
+            dir.at[angle_src].get(mode="fill", fill_value=0.5)
+            * dir.at[angle_dst].get(mode="fill", fill_value=0.5)
+        ).sum(axis=-1)
 
-        cos_angles = (vec1 * vec2).sum(axis=-1) / jnp.clip(d1 * d2, a_min=1e-10)
         angles = jnp.arccos(0.95 * cos_angles)
 
         return {
@@ -1353,20 +1328,19 @@ class GraphAngleProcessor(nn.Module):
 class SpeciesIndexer:
     """Build an index that splits atomic arrays by species.
 
+    FID: SPECIES_INDEXER
+
     If `species_order` is specified, the output will be a dense array with size (len(species_order), max_size) that can directly index atomic arrays.
     If `species_order` is None, the output will be a dictionary with species as keys and an index to filter atomic arrays for that species as values.
 
-    Parameters
-    ----------
-    output_key : str, default="species_index"
-        Key for the output dictionary.
-    species_order : str, default=None
-        Comma separated list of species in the order they should be indexed.
     """
 
     output_key: str = "species_index"
+    """Key for the output dictionary."""
     species_order: Optional[str] = None
+    """Comma separated list of species in the order they should be indexed."""
     add_atoms: int = 0
+    """Additional atoms to add to the sizes."""
 
     def init(self):
         return FrozenDict(
@@ -1438,11 +1412,41 @@ class SpeciesIndexer:
 
     @partial(jax.jit, static_argnums=(0, 1))
     def process(self, state, inputs):
-        assert (
-            self.output_key in inputs
-        ), f"Species Index {self.output_key} must be provided on accelerator. Call the numpy routine (self.__call__) first."
+        # assert (
+        #     self.output_key in inputs
+        # ), f"Species Index {self.output_key} must be provided on accelerator. Call the numpy routine (self.__call__) first."
 
-        return inputs
+        if self.output_key in inputs and "recompute_species_index" not in inputs:
+            return inputs
+
+        species = inputs["species"]
+        nat = species.shape[0]
+
+        sizes = state["sizes"]
+
+        if self.species_order is not None:
+            species_order = [el.strip() for el in self.species_order.split(",")]
+            max_size = state["max_size"]
+
+            species_index = jnp.full(
+                (len(species_order), max_size), nat, dtype=jnp.int32
+            )
+            for i, el in enumerate(species_order):
+                s = PERIODIC_TABLE_REV_IDX[el]
+                if s in sizes.keys():
+                    c = sizes[s]
+                    species_index = species_index.at[i, :].set(
+                        jnp.nonzero(species == s, size=max_size, fill_value=nat)[0]
+                    )
+                # if s in counts_dict.keys():
+                #     species_index[i, : counts_dict[s]] = np.nonzero(species == s)[0]
+        else:
+            species_index = {
+                PERIODIC_TABLE[s]: jnp.nonzero(species == s, size=c, fill_value=nat)[0]
+                for s, c in sizes.items()
+            }
+
+        return {**inputs, self.output_key: species_index}
 
     @partial(jax.jit, static_argnums=(0,))
     def update_skin(self, inputs):
@@ -1451,7 +1455,10 @@ class SpeciesIndexer:
 
 @dataclasses.dataclass(frozen=True)
 class AtomPadding:
+    """Pad atomic arrays to a fixed size."""
+
     mult_size: float = 1.2
+    """Multiplicative factor for resizing the atomic arrays."""
 
     def init(self):
         return {"prev_nat": 0}
@@ -1472,7 +1479,7 @@ class AtomPadding:
         if add_atoms > 0:
             batch_index = inputs["batch_index"]
             for k, v in inputs.items():
-                if isinstance(v, np.ndarray):
+                if isinstance(v, np.ndarray) or isinstance(v, jax.Array):
                     if v.shape[0] == nat:
                         output[k] = np.append(
                             v,
@@ -1483,7 +1490,7 @@ class AtomPadding:
                         if k == "cells":
                             output[k] = np.append(
                                 v,
-                                np.eye(3, dtype=v.dtype)[None, :, :],
+                                1000*np.eye(3, dtype=v.dtype)[None, :, :],
                                 axis=0,
                             )
                         else:
@@ -1493,7 +1500,7 @@ class AtomPadding:
             output["natoms"] = np.append(inputs["natoms"], 0)
             output["species"] = np.append(
                 species, -1 * np.ones(add_atoms, dtype=species.dtype)
-            )
+            ) 
             output["batch_index"] = np.append(
                 batch_index, np.array([nsys] * add_atoms, dtype=batch_index.dtype)
             )
@@ -1507,6 +1514,7 @@ class AtomPadding:
 
 
 def atom_unpadding(inputs: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove padding from atomic arrays."""
     if "true_atoms" not in inputs:
         return inputs
 
@@ -1536,6 +1544,7 @@ def atom_unpadding(inputs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def check_input(inputs):
+    """Check the input dictionary for required keys and types."""
     assert "species" in inputs, "species must be provided"
     assert "coordinates" in inputs, "coordinates must be provided"
     species = inputs["species"].astype(np.int32)
@@ -1566,6 +1575,8 @@ def check_input(inputs):
 
 
 def convert_to_jax(data):
+    """Convert a numpy arrays to jax arrays in a pytree."""
+
     def convert(x):
         if isinstance(x, np.ndarray):
             # if x.dtype == np.float64:
@@ -1577,15 +1588,22 @@ def convert_to_jax(data):
 
 
 class JaxConverter(nn.Module):
+    """Convert numpy arrays to jax arrays in a pytree."""
+
     def __call__(self, data):
         return convert_to_jax(data)
 
 
 @dataclasses.dataclass(frozen=True)
 class PreprocessingChain:
+    """Chain of preprocessing layers."""
+
     layers: Tuple[Callable[..., Dict[str, Any]]]
+    """Preprocessing layers."""
     use_atom_padding: bool = False
+    """Add an AtomPadding layer at the beginning of the chain."""
     atom_padder: AtomPadding = AtomPadding()
+    """AtomPadding layer."""
 
     def __post_init__(self):
         if not isinstance(self.layers, Sequence):

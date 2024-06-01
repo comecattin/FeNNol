@@ -1,7 +1,11 @@
-# FeNNol
-### Force-field-enhanced Neural Networks optimized library
+## FeNNol: Force-field-enhanced Neural Networks optimized library
 FeNNol is a library for building, training and running neural network potentials for molecular simulations. It is based on the JAX library and is designed to be fast and flexible.
 
+FeNNol's documentation is available [here](https://thomasple.github.io/FeNNol/).
+
+### Warning
+FeNNol is in early stages of development: some APIs are subject to change and documentation is still minimal (but should improve soon !). 
+This is also a temporary repository for the preprint https://arxiv.org/abs/2405.01491 The library will soon be moved to a more permanent location.
 
 ## Installation
 You can start with a fresh environment using conda:
@@ -23,9 +27,9 @@ export LD_LIBRARY_PATH=$HOME/miniconda3/envs/fennol/lib:$LD_LIBRARY_PATH
 
 Then, you can clone and install FeNNol using pip:
 ```bash
-git clone ...
+git clone https://github.com/thomasple/FeNNol.git
 cd FeNNol
-pip install -e .
+pip install .
 ```
 
 *Optional dependencies*:
@@ -41,3 +45,8 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```bash
 conda install cffi pydlpack pycuda
 ```
+
+## Examples
+To learn how to train a FeNNol model, you can check the examples in the [`examples/training`](https://github.com/thomasple/FeNNol/tree/main/examples/training) directory. The `README.md` file in that directory contains instructions on how to train a model on the aspirin revMD17 dataset.
+
+To learn how to run molecular dynamics simulations with FeNNol models, you can check the examples in the [`examples/md`](https://github.com/thomasple/FeNNol/tree/main/examples/md) directory. The `README.md` file in that directory contains instructions on how to run simulations with the provided ANI-2x model.
