@@ -55,6 +55,7 @@ class ANIAEVBOND(nn.Module):
     _graphs_properties: Dict
     species_order: Union[str,Sequence[str]]
     graph_angle_key: str
+    ecfp_dim: int
     radial_eta: float = 16.0
     angular_eta: float = 8.0
     radial_dist_divisions: int = 16
@@ -66,7 +67,6 @@ class ANIAEVBOND(nn.Module):
     embedding_key: str = "embedding"
     graph_key: str = "graph"
     ecfp_key: str = "ecfp"
-    ecfp_dim: int = 16
     bond_order_key: str = "bond_order"
 
     FID: str = "ANI_BOND"
@@ -84,7 +84,7 @@ class ANIAEVBOND(nn.Module):
             if self.ecfp_key == 'None':
                 ecfp = jnp.zeros((species.shape[0], self.ecfp_dim))
             else:
-                ecfp = inputs[self.ecfp_key].reshape(-1, self.ecfp_dim)
+                ecfp = inputs[self.ecfp_key].reshape(species.shape[0], self.ecfp_dim)
 
         if self.bond_order_key == 'None':
             graph = inputs[self.graph_key]
@@ -130,16 +130,16 @@ class ANIAEVBOND(nn.Module):
         )
         x2 = self.radial_eta * (distances[:, None] - shiftR) ** 2
         radial_terms = 0.25 * jnp.exp(-x2) * switch[:, None]
-        radial_terms = radial_terms[:, :, None] * bond_order[:, None, :]
+
         
         radial_aev_shape = (
             species.shape[0],
-            num_species**2 * radial_terms.shape[-1]**2 * bond_order.shape[-1],
+            num_species * radial_terms.shape[-1] * bond_order.shape[-1],
         )
         # aggregate radial AEV
         radial_index = edge_src * num_species + indices[edge_dst]
         radial_aev = jax.ops.segment_sum(
-            radial_terms,
+            radial_terms[:, None, :] * bond_order[:, :, None],
             radial_index,
             num_species * species.shape[0]
         ).reshape(radial_aev_shape)
