@@ -564,15 +564,15 @@ class GraphExternal:
         key to the edge index
         The edge index should be a 2D array with shape (n_edges, 2)
         It contains the source and destination of the edges (edge_src, edge_dst)
-    additional_keys: Sequence[str]
-        additional keys to be padded
+    additional_keys: str
+        additional keys to be padded, separated by commas
     mult_size: float
         multiplier for the size of the neighborlist
     """
 
     graph_key: str
     edge_key: str
-    additional_keys: Sequence[str] = dataclasses.field(default_factory=list)
+    additional_keys: str | None = None
     mult_size: float = 1.1
     cutoff: float = -1
 
@@ -612,8 +612,20 @@ class GraphExternal:
         }
 
     def __call__(self,state, inputs: Dict,return_state_update=False, add_margin=False):
+
+        if self.graph_key in inputs:
+            graph = inputs[self.graph_key]
+            if "keep_graph" in graph:
+                return state, inputs
+
+
         # Padding multiplier for the neighborlist
         mult_size = float(state.get("nblist_mult_size", self.mult_size))
+
+        if self.additional_keys is not None:
+            additional_keys = self.additional_keys.replace(' ','').split(',')
+        else :
+            additional_keys = []
 
         # Training initiation do not use edge_key
         if self.edge_key not in inputs:
@@ -626,7 +638,8 @@ class GraphExternal:
             }
             out = {**inputs, self.graph_key: graph}
             # Additional keys
-            for key in self.additional_keys:
+            
+            for key in additional_keys:
                 out[key] = np.array([], dtype=np.int32)
             if return_state_update:
                 return FrozenDict(state), out, {}
@@ -725,7 +738,7 @@ class GraphExternal:
         }
 
         # Additional keys to be padded
-        for key in self.additional_keys:
+        for key in additional_keys:
             value = out[key]
             if value.shape[0] == edge_index.shape[0]:
                 value = value[mask]
