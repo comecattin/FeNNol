@@ -14,6 +14,8 @@ from pathlib import Path
 import argparse
 import torch
 import random
+from flax import traverse_util
+import json
 
 from flax.core import freeze, unfreeze
 from .io import (
@@ -77,8 +79,9 @@ def main():
     # config_name = Path(config_file).name
     config_ext = Path(config_file).suffix
     with open(config_file) as f_in:
-        with open(output_directory + "/config" + config_ext, "w") as f_out:
-            f_out.write(f_in.read())
+        config_data = f_in.read()
+    with open(output_directory + "/config" + config_ext, "w") as f_out:
+        f_out.write(config_data)
 
     # set log file
     log_file = parameters.get("log_file", None)
@@ -186,7 +189,7 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
 
     # rename_refs = training_parameters.get("rename_refs", [])
     loss_definition, used_keys, ref_keys = get_loss_definition(
-        training_parameters
+        training_parameters, model_energy_unit = model.energy_unit
     )
 
     coordinates_ref_key = training_parameters.get("coordinates_ref_key", None)
@@ -204,6 +207,8 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
     batch_size = training_parameters.get("batch_size", 16)
 
     compute_forces = "forces" in used_keys
+    compute_virial = "virial_tensor" in used_keys or "virial" in used_keys
+    compute_stress = "stress_tensor" in used_keys or "stress" in used_keys
 
     # get optimizer parameters
     lr = training_parameters.get("lr", 1.0e-3)
@@ -215,6 +220,7 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
     peak_epoch = training_parameters.get("peak_epoch", 0.3 * max_epochs)
 
     schedule_type = training_parameters.get("schedule_type", "cosine_onecycle").lower()
+    schedule_type = training_parameters.get("scheduler", schedule_type).lower()
     schedule_metrics = training_parameters.get("schedule_metrics", "rmse_tot")
     print("Schedule type:", schedule_type)
     if schedule_type == "cosine_onecycle":
@@ -298,7 +304,21 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
         model.set_energy_terms(training_parameters["energy_terms"], jit=False)
     print("energy terms:", model.energy_terms)
 
-    if compute_forces:
+    pbc_training = training_parameters.get("pbc_training", False)
+    if compute_stress or compute_virial:
+        virial_key = "virial" if "virial" in used_keys else "virial_tensor"
+        stress_key = "stress" if "stress" in used_keys else "stress_tensor"
+        assert pbc_training, "PBC must be enabled for stress or virial training"
+        print("Computing stress and forces")
+        def evaluate(model, variables, data):
+            _, _,vir, output = model._energy_and_forces_and_virial(variables, data)
+            cells = output["cells"]
+            volume = jnp.linalg.det(cells)
+            stress = -vir / volume[:, None, None]
+            output[stress_key] = stress
+            output[virial_key] = vir
+            return output
+    elif compute_forces:
         print("Computing forces")
         def evaluate(model, variables, data):
             _, _, output = model._energy_and_forces(variables, data)
@@ -316,6 +336,7 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
         loss_definition=loss_definition,
         model=model,
         model_ref=model_ref,
+        compute_ref_coords=compute_ref_coords,
         evaluate=evaluate,
         optimizer=optimizer,
         ema=ema,
@@ -325,6 +346,7 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
         loss_definition=loss_definition,
         model=model,
         model_ref=model_ref,
+        compute_ref_coords=compute_ref_coords,
         evaluate=evaluate,
         return_targets=False,
     )
@@ -333,10 +355,11 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
 
     keep_all_bests = training_parameters.get("keep_all_bests", False)
     previous_best_name = None
-    rmse_tot_best = np.inf
+    best_metric = np.inf
+    metric_use_best = training_parameters.get("metric_best", "rmse").lower()
+    assert metric_use_best in ["mae", "rmse"], "metric_best must be 'mae' or 'rmse'"
 
     ## configure preprocessing ##
-    pbc_training = training_parameters.get("pbc_training", False)
     minimum_image = training_parameters.get("minimum_image", False)
     preproc_state = unfreeze(model.preproc_state)
     layer_state = []
@@ -386,19 +409,19 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
         for _ in range(nbatch_per_epoch):
             # fetch data
             s = time.time()
-            inputs,data = next(training_iterator)
+            inputs0,data = next(training_iterator)
             e = time.time()
             fetch_time += e - s
 
             # preprocess data
             s = time.time()
-            inputs = model.preprocess(**inputs)
+            inputs = model.preprocess(**inputs0)
 
             rng_key, subkey = jax.random.split(rng_key)
             inputs["rng_key"] = subkey
             if compute_ref_coords:
-                inputs_ref = {**inputs, "coordinates": data[coordinates_ref_key]}
-                inputs_ref = model.preprocessing(**inputs_ref)
+                inputs_ref = {**inputs0, "coordinates": data[coordinates_ref_key]}
+                inputs_ref = model.preprocess(**inputs_ref)
             else:
                 inputs_ref = None
             # if print_timings:
@@ -415,7 +438,7 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
             opt_st.inner_states["trainable"].inner_state[-1].hyperparams[
                 "step_size"
             ] = current_lr
-            loss, variables, opt_st, model.variables, ema_st = train_step(
+            loss, variables, opt_st, model.variables, ema_st, output = train_step(
                 data=data,
                 inputs=inputs,
                 variables=variables,
@@ -433,16 +456,16 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
         rmses_avg = defaultdict(lambda: 0.0)
         maes_avg = defaultdict(lambda: 0.0)
         for _ in range(nbatch_per_validation):
-            inputs,data = next(validation_iterator)
+            inputs0,data = next(validation_iterator)
 
-            inputs = model.preprocess(**inputs)
+            inputs = model.preprocess(**inputs0)
             
             if compute_ref_coords:
-                inputs_ref = {**inputs, "coordinates": data[coordinates_ref_key]}
+                inputs_ref = {**inputs0, "coordinates": data[coordinates_ref_key]}
                 inputs_ref = model.preprocess(**inputs_ref)
             else:
                 inputs_ref = None
-            rmses, maes, output = validation(
+            rmses, maes, output_val = validation(
                 data=data,inputs=inputs, variables=model.variables,inputs_ref=inputs_ref
             )
             for k, v in rmses.items():
@@ -461,11 +484,13 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
         print("")
         print(f"Epoch {epoch+1}, lr={current_lr:.3e}, loss = {loss:.3e}")
         rmse_tot = 0.0
+        mae_tot = 0.0
         for k in rmses_avg.keys():
             mult = loss_definition[k]["mult"]
             rmse_tot = (
-                rmse_tot + rmses_avg[k] / mult * loss_definition[k]["weight"] ** 0.5
+                rmse_tot + rmses_avg[k] * loss_definition[k]["weight"] ** 0.5
             )
+            mae_tot = mae_tot + maes_avg[k] * loss_definition[k]["weight"]
             unit = (
                 "(" + loss_definition[k]["unit"] + ")"
                 if "unit" in loss_definition[k]
@@ -493,7 +518,12 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
             if np.isnan(mae):
                 restore = True
                 reinit = True
-                break
+                print("NaN detected in mae")
+                # for k, v in inputs.items():
+                #     if hasattr(v,"shape"):
+                #         if np.isnan(v).any():
+                #             print(k,v)
+                #sys.exit(1)
             if "threshold" in loss_definition[k]:
                 thr = loss_definition[k]["threshold"]
                 if mae > thr * maes_prev[k]:
@@ -543,9 +573,11 @@ def train(rng_key, parameters, model_file=None, stage=None, output_directory=Non
             metrics[f"mae_{k}"] = maes_avg[k] / mult
 
         metrics["rmse_tot"] = rmse_tot
-        if rmse_tot < rmse_tot_best:
-            rmse_tot_best = rmse_tot
-            metrics["rmse_tot_best"] = rmse_tot_best
+        metrics["mae_tot"] = mae_tot
+        metric_for_best = metrics[metric_use_best+"_tot"]
+        if metric_for_best < best_metric:
+            best_metric = metric_for_best
+            metrics["best_metric"] = best_metric
             if keep_all_bests:
                 best_name = (
                     output_directory

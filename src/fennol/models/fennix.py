@@ -9,15 +9,15 @@ import flax.linen as nn
 import numpy as np
 from flax import serialization
 from flax.core.frozen_dict import freeze, unfreeze, FrozenDict
+from ..utils import AtomicUnits as au
 
 from .preprocessing import (
     GraphGenerator,
     PreprocessingChain,
-    PREPROCESSING,
     JaxConverter,
     atom_unpadding,
 )
-from .modules import MODULES, FENNIXModules
+from .modules import MODULES, PREPROCESSING, FENNIXModules
 
 
 @dataclasses.dataclass
@@ -34,7 +34,7 @@ class FENNIX:
     in the wrapper. If only `rng_key` is provided, the model is initialized with a dummy system and the resulting.
     """
 
-    cutoff: float | None
+    cutoff: Union[float,None]
     modules: FENNIXModules
     variables: Dict
     preprocessing: PreprocessingChain
@@ -59,6 +59,7 @@ class FENNIX:
         energy_terms: Optional[Sequence[str]] = None,
         use_atom_padding: bool = False,
         graph_config: Dict = {},
+        energy_unit: str = "Ha",
         **kwargs,
     ) -> None:
         """ Initialize the FENNIX model
@@ -92,7 +93,10 @@ class FENNIX:
             "cutoff": cutoff,
             "modules": OrderedDict(modules),
             "preprocessing": OrderedDict(preprocessing),
+            "energy_unit": energy_unit,
         }
+        self.energy_unit = energy_unit
+        self.Ha_to_model_energy = au.get_multiplier(energy_unit)
         self.cutoff = cutoff
         self.energy_terms = energy_terms
         self.use_atom_padding = use_atom_padding
@@ -127,9 +131,7 @@ class FENNIX:
         graphs_properties = self.preprocessing.get_graphs_properties()
         self._graphs_properties = freeze(graphs_properties)
         # add preprocessing modules that should be differentiated/jitted
-        mods = [(JaxConverter, {})] + self.preprocessing.get_processors(
-            return_list=True
-        )
+        mods = [(JaxConverter, {})] + self.preprocessing.get_processors()
         # mods = self.preprocessing.get_processors(return_list=True)
 
         # build the model
@@ -146,6 +148,8 @@ class FENNIX:
             fields = [f.name for f in dataclasses.fields(mod)]
             if "_graphs_properties" in fields:
                 params["_graphs_properties"] = graphs_properties
+            if "_energy_unit" in fields:
+                params["_energy_unit"] = energy_unit
             mods.append((mod, params))
 
         self.modules = FENNIXModules(mods)
@@ -170,7 +174,7 @@ class FENNIX:
 
         self._initializing = False
 
-    def set_energy_terms(self, energy_terms: Sequence[str] | None, jit=True) -> None:
+    def set_energy_terms(self, energy_terms: Union[Sequence[str],None], jit:bool=True) -> None:
         """ Set the energy terms to be computed by the model and prepare the energy and force functions."""
         object.__setattr__(self, "energy_terms", energy_terms)
         if energy_terms is None:
@@ -252,6 +256,7 @@ class FENNIX:
             def energy_and_forces_and_virial(variables, data):
                 assert "cells" in data
                 cells = data["cells"]
+                ## cells is a 3x3 matrix which lines are cell vectors (i.e. cells[0] is the first cell vector)
                 batch_index = data["batch_index"]
                 x = data["coordinates"]
 
@@ -305,8 +310,11 @@ class FENNIX:
         """apply preprocessing to the input data
 
         !!! This is not a pure function => do not apply jax transforms !!!"""
-        preproc_state, out = self.preprocessing(self.preproc_state, inputs)
-        object.__setattr__(self, "preproc_state", preproc_state)
+        if self.preproc_state is None:
+            out, _ = self.reinitialize_preprocessing(example_data=inputs)
+        else:
+            preproc_state, out = self.preprocessing(self.preproc_state, inputs)
+            object.__setattr__(self, "preproc_state", preproc_state)
         return out
 
     def reinitialize_preprocessing(
@@ -341,7 +349,7 @@ class FENNIX:
         return output
 
     def total_energy(
-        self, variables: Optional[dict] = None, **inputs
+        self, variables: Optional[dict] = None, unit:Union[float,str] = None,**inputs
     ) -> Tuple[jnp.ndarray, Dict]:
         """compute the total energy of the system
 
@@ -354,10 +362,16 @@ class FENNIX:
         _, output = self._total_energy(variables, inputs)
         if self.use_atom_padding:
             output = atom_unpadding(output)
-        return output["total_energy"], output
+        e = output["total_energy"]
+        if unit is not None:
+            model_energy_unit = self.Ha_to_model_energy
+            if isinstance(unit, str):
+                unit = au.get_multiplier(unit)
+            e = e * (unit/model_energy_unit)
+        return e, output
 
     def energy_and_forces(
-        self, variables: Optional[dict] = None, **inputs
+        self, variables: Optional[dict] = None, unit: Union[float,str]=None,**inputs
     ) -> Tuple[jnp.ndarray, jnp.ndarray, Dict]:
         """compute the total energy and forces of the system
 
@@ -370,10 +384,18 @@ class FENNIX:
         _, _, output = self._energy_and_forces(variables, inputs)
         if self.use_atom_padding:
             output = atom_unpadding(output)
-        return output["total_energy"], output["forces"], output
+        e = output["total_energy"]
+        f = output["forces"]
+        if unit is not None:
+            model_energy_unit = self.Ha_to_model_energy
+            if isinstance(unit, str):
+                unit = au.get_multiplier(unit)
+            e = e * (unit/model_energy_unit)
+            f = f * (unit/model_energy_unit)
+        return e,f, output
 
     def energy_and_forces_and_virial(
-        self, variables: Optional[dict] = None, **inputs
+        self, variables: Optional[dict] = None, unit: Union[float,str]=None, **inputs
     ) -> Tuple[jnp.ndarray, jnp.ndarray, Dict]:
         """compute the total energy and forces of the system
 
@@ -386,7 +408,17 @@ class FENNIX:
         _, _, _, output = self._energy_and_forces_and_virial(variables, inputs)
         if self.use_atom_padding:
             output = atom_unpadding(output)
-        return output["total_energy"], output["forces"], output["virial_tensor"], output
+        e = output["total_energy"]
+        f = output["forces"]
+        v = output["virial_tensor"]
+        if unit is not None:
+            model_energy_unit = self.Ha_to_model_energy
+            if isinstance(unit, str):
+                unit = au.get_multiplier(unit)
+            e = e * (unit/model_energy_unit)
+            f = f * (unit/model_energy_unit)
+            v = v * (unit/model_energy_unit)
+        return e,f,v, output
 
     def remove_atom_padding(self, output):
         """ remove atom padding from the output """
@@ -438,7 +470,9 @@ class FENNIX:
         if box_size is None:
             box_size = 2 * self.cutoff
             for g in self._graphs_properties.values():
-                box_size = min(box_size, 2 * g["cutoff"])
+                cutoff = g["cutoff"]
+                if cutoff is not None:
+                    box_size = min(box_size, 2 * g["cutoff"])
         coordinates = np.array(
             jax.random.uniform(rng_key, (n_atoms, 3), maxval=box_size)
         )
