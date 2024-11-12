@@ -4,17 +4,18 @@
 Created by C. Cattin 2024
 """
 
+from typing import ClassVar, Optional
+
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-from typing import Optional, ClassVar
 
 from fennol.utils import AtomicUnits as Au
 
 
 class Polarization(nn.Module):
     """Polarization model with Thole damping scheme.
-    
+
     FID: POLARIZATION
     """
 
@@ -73,7 +74,6 @@ class Polarization(nn.Module):
         ######################
         # Diagonal terms
         tii = 1 / polarizability[:, None]
-        
 
         ##################
         # Electric field #
@@ -85,10 +85,10 @@ class Polarization(nn.Module):
         ###############################
         if self.neglect_mutual:
             electric_field = electric_field.reshape(-1, 3)
-            mu = polarizability[:,None]*electric_field
+            mu = polarizability[:, None] * electric_field
             mu_ = jax.lax.stop_gradient(mu)
-            tmu = tii*mu_
-            
+            tmu = tii * mu_
+
         else:
             # Effective distance
             uij = rij / alpha_ij ** (1 / 6)
@@ -133,7 +133,7 @@ class Polarization(nn.Module):
             self.energy_key if self.energy_key is not None else self.name
         )
         energy_unit = Au.get_multiplier(self._energy_unit)
-        output[energy_key] = pol_energy*energy_unit
+        output[energy_key] = pol_energy * energy_unit
         output['tmu'] = tmu.reshape(-1, 3)
 
         return {**inputs, **output}
