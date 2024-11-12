@@ -34,24 +34,27 @@ class RepulsionZBL(nn.Module):
         graph = inputs[self.graph_key]
         edge_src, edge_dst = graph["edge_src"], graph["edge_dst"]
 
+        training = "training" in inputs.get("flags", {})
+
         rijs = graph["distances"] / au.BOHR
 
-        d = 0.46850 / au.BOHR
-        p = 0.23
-        alphas = [3.19980, 0.94229, 0.40290, 0.20162]
+        d_ = 0.46850 / au.BOHR
+        p_ = 0.23
+        alphas_ = np.array([3.19980, 0.94229, 0.40290, 0.20162])
+        cs_ = 0.5 * np.array([0.18175273, 0.5098655, 0.28021213, 0.0281697])
         if self.trainable:
             d = jnp.abs(
                 self.param(
                     "d",
-                    lambda key, p: jnp.asarray(d, dtype=rijs.dtype),
-                    d,
+                    lambda key, d: jnp.asarray(d, dtype=rijs.dtype),
+                    d_,
                 )
             )
             p = jnp.abs(
                 self.param(
                     "p",
                     lambda key, p: jnp.asarray(p, dtype=rijs.dtype),
-                    p,
+                    p_,
                 )
             )
             cs = 0.5 * jax.nn.softmax(
@@ -65,14 +68,18 @@ class RepulsionZBL(nn.Module):
                 self.param(
                     "alphas",
                     lambda key, alphas: jnp.asarray(alphas, dtype=rijs.dtype),
-                    alphas,
+                    alphas_,
                 )
             )
+
+            if training:
+                reg = jnp.asarray(((alphas_ - alphas) ** 2).sum() + ((cs_ - cs) ** 2).sum() + (p_ - p) ** 2 + (d_ - d) ** 2).reshape(1)
         else:
-            cs = jnp.asarray(
-                0.5 * np.array([0.18175273, 0.5098655, 0.28021213, 0.0281697])
+            cs = jnp.asarray(cs_
             )
-            alphas = jnp.asarray(alphas)
+            alphas = jnp.asarray(alphas_)
+            d = d_
+            p = p_
 
         Z = jnp.where(species > 0, species.astype(rijs.dtype), 0.0)
         Zi, Zj = Z[edge_src], Z[edge_dst]
@@ -86,4 +93,8 @@ class RepulsionZBL(nn.Module):
 
         energy_unit = au.get_multiplier(self._energy_unit)
         energy_key = self.energy_key if self.energy_key is not None else self.name
-        return {**inputs, energy_key: erep_atomic*energy_unit}
+        output =  {**inputs, energy_key: erep_atomic*energy_unit}
+        if self.trainable and training:
+            output[energy_key+"_regularization"] = reg
+        
+        return output
