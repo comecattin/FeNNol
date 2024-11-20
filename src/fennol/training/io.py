@@ -465,9 +465,6 @@ def load_dataset(
             shuffle=shuffle,
             collate_fn=collate_fn_train,
         )
-    dataloader_training = DataLoader(
-        dataset["training"], batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn
-    )
 
     if not infinite_iterator:
         if train_val_split:
