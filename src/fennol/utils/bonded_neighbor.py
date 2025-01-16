@@ -161,13 +161,24 @@ def bonded_order_sparse_to_dense(bond_order, edge_src, edge_dst, n_atom):
         bond_order_dense[j, i] = bo
     return bond_order_dense
 
-def get_edge_list(smiles=None, xyz=None, max_neighbor=3, padding=4):
+
+def get_edge_list(
+        smiles=None,
+        xyz=None,
+        mol_input=None,
+        max_neighbor=3,
+        padding=4
+    ):
     """Get the edge list of the molecule.
     
     Parameters
     ----------
     smiles : str
         SMILES string of the molecule.
+    xyz : str
+        XYZ file of the molecule.
+    mol_input : rdkit.Chem.Mol
+        RDKit molecule object.
     max_neighbor : int, optional
         Maximum number of neighbors to consider, by default 3
     padding : int, optional
@@ -182,12 +193,17 @@ def get_edge_list(smiles=None, xyz=None, max_neighbor=3, padding=4):
         raise NotImplementedError("Only support up to 3rd neighbor (1-4 interaction).")
     if smiles is not None:
         raw_mol = Chem.MolFromSmiles(smiles)
+        mol = Chem.Mol(raw_mol)
+        rdDetermineBonds.DetermineBonds(mol, charge=0)
     elif xyz is not None:
         raw_mol = Chem.MolFromXYZFile(xyz)
+        mol = Chem.Mol(raw_mol)
+        rdDetermineBonds.DetermineBonds(mol, charge=0)
+    elif mol_input is not None:
+        mol = mol_input
     else:
         raise ValueError("Either SMILES or XYZ must be provided.")
-    mol = Chem.Mol(raw_mol)
-    rdDetermineBonds.DetermineBonds(mol, charge=0)
+    
     n_atom = mol.GetNumAtoms()
 
     edge_src = []
@@ -203,10 +219,17 @@ def get_edge_list(smiles=None, xyz=None, max_neighbor=3, padding=4):
     bond_order = []
 
     # 1-2 interaction
-    for bond in mol.GetBonds():
-        edge_src.append(bond.GetBeginAtomIdx())
-        edge_dst.append(bond.GetEndAtomIdx())
-        bond_order.append(int(2 * bond.GetBondTypeAsDouble() - 2))
+    if mol_input is not None:
+        for bond in mol.GetBonds():
+            edge_src.append(bond.GetBeginAtom().GetAtomMapNum() - 1)
+            edge_dst.append(bond.GetEndAtom().GetAtomMapNum() - 1)
+            bond_order.append(int(2 * bond.GetBondTypeAsDouble() - 2))
+        n_12, i_12 = get_first_neighbor(n_atom, edge_src, edge_dst, padding)
+    else:
+        for bond in mol.GetBonds():
+            edge_src.append(bond.GetBeginAtomIdx())
+            edge_dst.append(bond.GetEndAtomIdx())
+            bond_order.append(int(2 * bond.GetBondTypeAsDouble() - 2))
         n_12, i_12 = get_first_neighbor(n_atom, edge_src, edge_dst, padding)
     
     # 1-3 interaction
@@ -233,7 +256,7 @@ def get_edge_list(smiles=None, xyz=None, max_neighbor=3, padding=4):
         edge_dst.extend(edge_dst_14)
         bond_order.extend([5] * len(edge_src_14))
 
-    edge_index_out = np.column_stack((edge_src, edge_dst))
+    edge_index_out = np.column_stack((edge_src, edge_dst)).astype(np.int32)
 
     return edge_index_out, bond_order
 
