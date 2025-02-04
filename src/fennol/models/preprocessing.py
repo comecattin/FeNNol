@@ -1357,7 +1357,7 @@ class AtomPadding:
                     if v.shape[0] == nat:
                         output[k] = np.append(
                             v,
-                            - np.ones((add_atoms, *v.shape[1:]), dtype=v.dtype),
+                            np.zeros((add_atoms, *v.shape[1:]), dtype=v.dtype),
                             axis=0,
                         )
                     elif v.shape[0] == nsys:
