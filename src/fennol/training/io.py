@@ -56,6 +56,7 @@ def load_dataset(
     train_val_split=True,
     training_parameters={},
     add_flags=["training"],
+    fprec="float32",
 ):
     """
     Load a dataset from a pickle file.
@@ -204,9 +205,10 @@ def load_dataset(
                         [0.0, length_nopbc, 0.0],
                         [0.0, 0.0, length_nopbc],
                     ]
+                    ,dtype=fprec
                 )
             else:
-                cell = np.asarray(d["cell"])
+                cell = np.asarray(d["cell"], dtype=fprec)
             output["cells"].append(cell.reshape(1, 3, 3))
 
     else:
@@ -233,7 +235,7 @@ def load_dataset(
 
         def add_other_keys(d, output, atom_shift):
             output["species"].append(np.asarray(d["species"]))
-            output["coordinates"].append(np.asarray(d["coordinates"]))
+            output["coordinates"].append(np.asarray(d["coordinates"], dtype=fprec))
             for k in additional_input_keys:
                 v_array = np.array(d[k])
                 # Shift atom number if necessary
@@ -255,9 +257,9 @@ def load_dataset(
         output["natoms"].append(np.asarray([nat]))
         output["batch_index"].append(np.asarray([batch_index] * nat))
         if "total_charge" not in d:
-            total_charge = np.asarray(0.0, dtype=np.float32)
+            total_charge = np.asarray(0.0, dtype=fprec)
         else:
-            total_charge = np.asarray(d["total_charge"], dtype=np.float32)
+            total_charge = np.asarray(d["total_charge"], dtype=fprec)
         output["total_charge"].append(total_charge)
 
         add_cell(d, output)
@@ -288,10 +290,14 @@ def load_dataset(
 
         # Stack and concatenate the arrays
         for k, v in output.items():
+            
             if v[0].ndim == 0:
-                output[k] = np.stack(v)
+                v = np.stack(v)
             else:
-                output[k] = np.concatenate(v, axis=0)
+                v = np.concatenate(v, axis=0)
+            if np.issubdtype(v.dtype, np.floating):
+                v = v.astype(fprec)
+            output[k] = v
 
         if "cells" in output and pbc_training:
             output["reciprocal_cells"] = np.linalg.inv(output["cells"])
@@ -333,7 +339,7 @@ def load_dataset(
         collate_layers_train.append(collate_with_noise)
 
     if atom_padding:
-        padder = AtomPadding(add_sys=training_parameters.get("padder_add_sys", 1))
+        padder = AtomPadding(add_sys=training_parameters.get("padder_add_sys", 0))
         padder_state = padder.init()
 
         def collate_with_padding(batch):
