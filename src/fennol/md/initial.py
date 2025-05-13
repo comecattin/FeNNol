@@ -27,40 +27,37 @@ from copy import deepcopy
 
 
 def load_model(simulation_parameters):
-    model_file = simulation_parameters.get("model_file")
-    model_file = Path(str(model_file).strip())
-    if not model_file.exists():
-        raise FileNotFoundError(f"model file {model_file} not found")
-    else:
-        graph_config = simulation_parameters.get("graph_config", {})
-        model = FENNIX.load(model_file, graph_config=graph_config)  # \
-        print(f"# model_file: {model_file}")
 
-    # Load Small model for multiple timestep
+    models = {}
+    models_files = {}
+
+    large_model_file = simulation_parameters.get("model_file")
+    large_model_file = Path(str(large_model_file).strip())
+    models_files['large'] = large_model_file
+
     if 'small_model_file' in simulation_parameters:
         small_model_file = simulation_parameters.get("small_model_file")
         small_model_file = Path(str(small_model_file).strip())
-        if not small_model_file.exists():
-            raise FileNotFoundError(f"small model file {small_model_file} not found")
+        models_files['small'] = small_model_file
+
+    for model_type, model_file in models_files.items():
+        if not model_file.exists():
+            raise FileNotFoundError(f"model file {model_file} not found")
         else:
-            small_model = FENNIX.load(small_model_file, graph_config=graph_config)
-            print(f"# small_model_file: {small_model_file}")
+            graph_config = simulation_parameters.get("graph_config", {})
+            model = FENNIX.load(model_file, graph_config=graph_config)
+            print(f"# model_file: {model_file}")
 
-    if "energy_terms" in simulation_parameters:
-        energy_terms = simulation_parameters["energy_terms"]
-        if isinstance(energy_terms, str):
-            energy_terms = energy_terms.split()
-        model.set_energy_terms(energy_terms)
-        print("# energy terms:", model.energy_terms)
+        if 'energy_terms' in simulation_parameters:
+            energy_terms = simulation_parameters["energy_terms"]
+            if isinstance(energy_terms, str):
+                energy_terms = energy_terms.split()
+            model.set_energy_terms(energy_terms)
+            print("# energy terms:", model.energy_terms)
+        
+        models[model_type] = model
 
-        if 'small_model_file' in simulation_parameters:
-            small_model.set_energy_terms(energy_terms)
-            model = [model, small_model]
-    
-    if 'small_model_file' in simulation_parameters:
-        model = [model, small_model]
-
-    return model
+    return models
 
 
 def load_system_data(simulation_parameters, fprec):
@@ -205,44 +202,50 @@ def load_system_data(simulation_parameters, fprec):
     return system_data, conformation
 
 
-def initialize_preprocessing(simulation_parameters, model, conformation, system_data):
+def initialize_preprocessing(simulation_parameters, models, conformation, system_data):
     nblist_verbose = simulation_parameters.get("nblist_verbose", False)
     nblist_skin = simulation_parameters.get("nblist_skin", -1.0)
     pbc_data = system_data.get("pbc", None)
 
     ### CONFIGURE PREPROCESSING
-    preproc_state = unfreeze(model.preproc_state)
-    layer_state = []
-    for st in preproc_state["layers_state"]:
-        stnew = unfreeze(st)
-        if pbc_data is not None:
-            stnew["minimum_image"] = pbc_data["minimum_image"]
-        if nblist_skin > 0:
-            stnew["nblist_skin"] = nblist_skin
-        if "nblist_mult_size" in simulation_parameters:
-            stnew["nblist_mult_size"] = simulation_parameters["nblist_mult_size"]
-        if "nblist_add_neigh" in simulation_parameters:
-            stnew["add_neigh"] = simulation_parameters["nblist_add_neigh"]
-        layer_state.append(freeze(stnew))
-    preproc_state["layers_state"] = layer_state
-    preproc_state = freeze(preproc_state)
+    preproc_states = {}
+    conformations = {}
+    for model_type, model in models.items():
+        preproc_state = unfreeze(model.preproc_state)
+        layer_state = []
+        for st in preproc_state["layers_state"]:
+            stnew = unfreeze(st)
+            if pbc_data is not None:
+                stnew["minimum_image"] = pbc_data["minimum_image"]
+            if nblist_skin > 0:
+                stnew["nblist_skin"] = nblist_skin
+            if "nblist_mult_size" in simulation_parameters:
+                stnew["nblist_mult_size"] = simulation_parameters["nblist_mult_size"]
+            if "nblist_add_neigh" in simulation_parameters:
+                stnew["add_neigh"] = simulation_parameters["nblist_add_neigh"]
+            layer_state.append(freeze(stnew))
+        preproc_state["layers_state"] = layer_state
+        preproc_state = freeze(preproc_state)
 
-    ## initial preprocessing
-    preproc_state = preproc_state.copy({"check_input": True})
-    preproc_state, conformation = model.preprocessing(preproc_state, conformation)
+        ## initial preprocessing
+        preproc_state = preproc_state.copy({"check_input": True})
+        preproc_state, conformation = model.preprocessing(preproc_state, conformation)
 
-    preproc_state = preproc_state.copy({"check_input": False})
+        preproc_state = preproc_state.copy({"check_input": False})
 
-    if nblist_verbose:
-        graphs_keys = list(model._graphs_properties.keys())
-        print("# graphs_keys: ", graphs_keys)
-        print("# nblist state:", preproc_state)
+        if nblist_verbose:
+            graphs_keys = list(model._graphs_properties.keys())
+            print("# graphs_keys: ", graphs_keys)
+            print("# nblist state:", preproc_state)
 
-    ### print model
-    if simulation_parameters.get("print_model", False):
-        print(model.summarize(example_data=conformation))
+        ### print model
+        if simulation_parameters.get("print_model", False):
+            print(model.summarize(example_data=conformation))
+        
+        preproc_states[model_type] = preproc_state
+        conformations[model_type] = conformation
 
-    return preproc_state, conformation
+    return preproc_states, conformations
 
 
 def initialize_system(conformation, vel, model, system_data, fprec):
