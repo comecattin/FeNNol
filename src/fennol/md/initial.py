@@ -36,12 +36,29 @@ def load_model(simulation_parameters):
         model = FENNIX.load(model_file, graph_config=graph_config)  # \
         print(f"# model_file: {model_file}")
 
+    # Load Small model for multiple timestep
+    if 'small_model_file' in simulation_parameters:
+        small_model_file = simulation_parameters.get("small_model_file")
+        small_model_file = Path(str(small_model_file).strip())
+        if not small_model_file.exists():
+            raise FileNotFoundError(f"small model file {small_model_file} not found")
+        else:
+            small_model = FENNIX.load(small_model_file, graph_config=graph_config)
+            print(f"# small_model_file: {small_model_file}")
+
     if "energy_terms" in simulation_parameters:
         energy_terms = simulation_parameters["energy_terms"]
         if isinstance(energy_terms, str):
             energy_terms = energy_terms.split()
         model.set_energy_terms(energy_terms)
         print("# energy terms:", model.energy_terms)
+
+        if 'small_model_file' in simulation_parameters:
+            small_model.set_energy_terms(energy_terms)
+            model = [model, small_model]
+    
+    if 'small_model_file' in simulation_parameters:
+        model = [model, small_model]
 
     return model
 
