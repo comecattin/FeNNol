@@ -33,8 +33,17 @@ from .initial import initialize_system
 def initialize_dynamics(
     simulation_parameters, system_data, conformation, model, fprec, rng_key
 ):
+    
+    if len(model) == 2:
+        do_multi_timestep = True
+    else:
+        do_multi_timestep = False
+        model = model["large"]
+        conformation = conformation["large"]
+
+
     step, update_conformation, dyn_state, thermo_state, vel = initialize_integrator(
-        simulation_parameters, system_data, model, fprec, rng_key
+        simulation_parameters, system_data, model, fprec, rng_key, do_multi_timestep
     )
     ### initialize system
     system = initialize_system(
@@ -43,12 +52,14 @@ def initialize_dynamics(
         model,
         system_data,
         fprec,
+        do_multi_timestep
     )
     return step, update_conformation, dyn_state, {**system, **thermo_state}
 
 
-def initialize_integrator(simulation_parameters, system_data, model, fprec, rng_key):
+def initialize_integrator(simulation_parameters, system_data, model, fprec, rng_key, do_multi_timestep):
     dt = simulation_parameters.get("dt") * au.FS
+    n_slow = simulation_parameters.get("n_slow", 1)
     dt2 = 0.5 * dt
     nbeads = system_data.get("nbeads", None)
 
@@ -56,6 +67,7 @@ def initialize_integrator(simulation_parameters, system_data, model, fprec, rng_
     totmass_amu = system_data["totmass_amu"]
     nat = system_data["nat"]
     dt2m = jnp.asarray(dt2 / mass[:, None], dtype=fprec)
+    dtm = jnp.asarray(dt / mass[:, None], dtype=fprec)
     if nbeads is not None:
         dt2m = dt2m[None, :, :]
 
@@ -65,7 +77,11 @@ def initialize_integrator(simulation_parameters, system_data, model, fprec, rng_
         "pimd": nbeads is not None,
     }
 
-    model_energy_unit = au.get_multiplier(model.energy_unit)
+    if do_multi_timestep:
+        model_energy_unit_large = au.get_multiplier(model["large"].energy_unit)
+        model_energy_unit_small = au.get_multiplier(model["small"].energy_unit)
+    else:
+        model_energy_unit = au.get_multiplier(model.energy_unit)
 
     # initialize thermostat
     thermostat_rng, rng_key = jax.random.split(rng_key)
@@ -284,6 +300,175 @@ def initialize_integrator(simulation_parameters, system_data, model, fprec, rng_
 
             return system
 
+    ### Multi timestep integrator
+    elif do_multi_timestep:
+        nreplicas = system_data.get("nreplicas", 1)
+        @jax.jit
+        def update_conformation(conformation, system):
+            conformation = {**conformation, "coordinates": system["coordinates"]}
+            if variable_cell:
+                conformation["cells"] = system["cell"][None, :, :].repeat(nreplicas, axis=0)
+                conformation["reciprocal_cells"] = jnp.linalg.inv(system["cell"])[
+                    None, :, :
+                ].repeat(nreplicas, axis=0)
+            return conformation
+        
+        @jax.jit
+        def stepA(system):
+            v = system["vel"]
+            f = system["forces"]
+            x = system["coordinates"]
+
+            v = v + f * dt2m
+            x = x + dt2 * v
+            x, v, system = thermo_update(x, v, system)
+            x = x + dt2 * v
+
+            return {**system, "coordinates": x, "vel": v}
+
+        @jax.jit
+        def update_forces(system, conformation):
+            if estimate_pressure:
+                epot, f, vir_t, out = model['small']._energy_and_forces_and_virial(
+                    model['small'].variables, conformation['small']
+                )
+                epot = epot / model_energy_unit_small
+                f = f / model_energy_unit_small
+                vir_t = vir_t / model_energy_unit_small
+                new_sys = {
+                    **system,
+                    "forces": f,
+                    "epot": jnp.mean(epot),
+                    "virial": jnp.mean(vir_t, axis=0),
+                }
+            else:
+                epot, f, out = model['small']._energy_and_forces(model['small'].variables, conformation['small'])
+                epot = epot / model_energy_unit_small
+                f = f / model_energy_unit_small
+                new_sys = {**system, "forces": f, "epot": jnp.mean(epot)}
+
+            if ensemble_key is not None:
+                kT = system_data["kT"]
+                dE = jnp.mean(out[ensemble_key],axis=0) / model_energy_unit_small - new_sys["epot"]
+                new_sys["ensemble_weights"] = -dE / kT
+            
+            if "total_dipole" in out:
+                new_sys["total_dipole"] = out["total_dipole"][0]
+
+            if use_colvars:
+                coords = system["coordinates"][0]
+                colvars = {}
+                for colvar_name, colvar_calc in colvars_calculators.items():
+                    colvars[colvar_name] = colvar_calc(coords)
+                new_sys["colvars"] = colvars
+                
+            return new_sys,out
+        
+        @jax.jit
+        def stepB(system):
+            v = system["vel"]
+            f = system["forces"]
+            state_th = system["thermostat"]
+
+            v = v + f * dt2m
+            # ek = 0.5 * jnp.sum(mass[:, None] * v**2) / state_th.get("corr_kin", 1.0)
+            ek_tensor = (
+                (0.5 / nreplicas / state_th.get("corr_kin", 1.0) )
+                * jnp.sum(mass[:, None, None] * v[:, :, None] * v[:, None, :], axis=0)
+            )
+            system = {
+                **system,
+                "vel": v,
+                "ek": jnp.trace(ek_tensor),
+                "ek_tensor": ek_tensor,
+            }
+
+            if estimate_pressure:
+                vir = system["virial"]
+                volume = jnp.abs(jnp.linalg.det(system["cell"]))
+                Pres = (2 * ek_tensor - vir) / volume
+                system["pressure_tensor"] = Pres
+                system["pressure"] = jnp.trace(Pres) * (1.0 / 3.0)
+                if variable_cell:
+                    density = totmass_amu / volume
+                    system["density"] = density
+                    system["volume"] = volume
+
+            return system
+        
+        @jax.jit
+        def stepB_slow(system, conformation):
+
+            v = system['vel']
+            state_th = system["thermostat"]
+
+            # Compute forces using the large model
+            if estimate_pressure:
+                epot, f_large, vir_t, out = model['large']._energy_and_forces_and_virial(
+                    model['large'].variables, conformation['large']
+                )
+                epot = epot / model_energy_unit_large
+                f_large = f_large / model_energy_unit_large
+                vir_t = vir_t / model_energy_unit_large
+                new_sys = {
+                    **system,
+                    "forces_slow": f_large,
+                    "epot": jnp.mean(epot),
+                    "virial": jnp.mean(vir_t, axis=0),
+                }
+            else:
+                epot, f_large, out = model['large']._energy_and_forces(model['large'].variables, conformation['large'])
+                epot = epot / model_energy_unit_large
+                f_large = f_large / model_energy_unit_large
+                new_sys = {**system, "forces_slow": f_large, "epot": jnp.mean(epot)}
+            
+            if ensemble_key is not None:
+                kT = system_data["kT"]
+                dE = jnp.mean(out[ensemble_key],axis=0) / model_energy_unit_large - new_sys["epot"]
+                new_sys["ensemble_weights"] = -dE / kT
+            
+            if "total_dipole" in out:
+                new_sys["total_dipole"] = out["total_dipole"][0]
+
+            if use_colvars:
+                coords = system["coordinates"][0]
+                colvars = {}
+                for colvar_name, colvar_calc in colvars_calculators.items():
+                    colvars[colvar_name] = colvar_calc(coords)
+                new_sys["colvars"] = colvars
+            
+            # Update the velocities
+            v = new_sys["vel"] + dtm * n_slow * (f_large - system['forces'])
+
+            ek_tensor = (
+                (0.5 / nreplicas / state_th.get("corr_kin", 1.0) )
+                * jnp.sum(mass[:, None, None] * v[:, :, None] * v[:, None, :], axis=0)
+            )
+            system = {
+                **new_sys,
+                "vel": v,
+                "ek": jnp.trace(ek_tensor),
+                "ek_tensor": ek_tensor,
+            }
+
+            if estimate_pressure:
+                vir = system["virial"]
+                volume = jnp.abs(jnp.linalg.det(system["cell"]))
+                Pres = (2 * ek_tensor - vir) / volume
+                system["pressure_tensor"] = Pres
+                system["pressure"] = jnp.trace(Pres) * (1.0 / 3.0)
+                if variable_cell:
+                    density = totmass_amu / volume
+                    system["density"] = density
+                    system["volume"] = volume
+
+            return system
+
+
+
+
+
+
     else:
         nreplicas = system_data.get("nreplicas", 1)
         ### CLASSICAL MD INTEGRATOR
@@ -455,6 +640,7 @@ def initialize_integrator(simulation_parameters, system_data, model, fprec, rng_
             **dyn_state,
             "istep": dyn_state["istep"] + 1,
         }
+
         if print_timings:
             prev_timings = dyn_state["timings"]
             timings = defaultdict(lambda: 0.0)
@@ -481,12 +667,50 @@ def initialize_integrator(simulation_parameters, system_data, model, fprec, rng_
         if nblist_countdown <= 0 or force_preprocess or (istep < nblist_warmup):
             ### full nblist update
             dyn_state["nblist_countdown"] = nblist_stride - 1
-            conformation = model.preprocessing.process(
-                preproc_state, update_conformation(conformation, system)
-            )
-            preproc_state, state_up, conformation, overflow = (
-                model.preprocessing.check_reallocate(preproc_state, conformation)
-            )
+            
+            if do_multi_timestep:
+                conformation['large'] = model['large'].preprocessing.process(
+                    preproc_state['large'],
+                    update_conformation(
+                        conformation['large'], system
+                    )
+                )
+                conformation['small'] = model['small'].preprocessing.process(
+                    preproc_state['small'],
+                    update_conformation(
+                        conformation['small'], system
+                    )
+                )
+                preproc_state['small'], state_up, conformation['small'], overflow = (
+                    model['small'].preprocessing.check_reallocate(preproc_state['small'], conformation['small'])
+                )
+                preproc_state['large'], state_up, conformation['large'], overflow = (
+                    model['large'].preprocessing.check_reallocate(preproc_state['large'], conformation['large'])
+                )
+            else:
+                try:
+                    preproc_state = preproc_state['large']
+                    conformation = conformation['large']
+                except:
+                    pass
+                conformation = model.preprocessing.process(
+                    preproc_state,
+                    update_conformation(
+                        conformation, system
+                    )
+                )
+                (
+                    preproc_state,
+                    state_up,
+                    conformation,
+                    overflow
+                ) = (
+                    model.preprocessing.check_reallocate(
+                        preproc_state, conformation
+                    )
+                )
+
+
             if nblist_verbose and overflow:
                 print("step", istep, ", nblist overflow => reallocating nblist")
                 print("size updates:", state_up)
@@ -517,9 +741,19 @@ def initialize_integrator(simulation_parameters, system_data, model, fprec, rng_
                 dyn_state["print_skin_activation"] = False
 
             dyn_state["nblist_countdown"] = nblist_countdown - 1
-            conformation = model.preprocessing.update_skin(
-                update_conformation(conformation, system)
+            
+            if do_multi_timestep:
+                conformation['large'] = model['large'].preprocessing.update_skin(
+                update_conformation(conformation['large'], system)
             )
+                conformation['small'] = model['small'].preprocessing.update_skin(
+                    update_conformation(conformation['small'], system)
+                )
+            else:
+                conformation = model.preprocessing.update_skin(
+                    update_conformation(conformation, system)
+                )
+            
             if do_ir_spectrum and model_ir is not None:
                 dyn_state["conformation_ir"] = model_ir.preprocessing.update_skin(
                     update_conformation_ir(dyn_state["conformation_ir"], system)
@@ -539,6 +773,11 @@ def initialize_integrator(simulation_parameters, system_data, model, fprec, rng_
 
         ## finish step
         system = stepB(system)
+
+        ## Multiple timestep
+        if do_multi_timestep:
+            if istep % n_slow == 0:
+                system = stepB_slow(system, conformation)
 
         ## end of step update (mostly for adQTB)
         if do_thermostat_post:
