@@ -46,7 +46,7 @@ def load_model(simulation_parameters):
         else:
             graph_config = simulation_parameters.get("graph_config", {})
             model = FENNIX.load(model_file, graph_config=graph_config)
-            print(f"# model_file: {model_file}")
+            print(f"# {model_type} model_file: {model_file}")
 
         if 'energy_terms' in simulation_parameters:
             energy_terms = simulation_parameters["energy_terms"]
@@ -248,9 +248,13 @@ def initialize_preprocessing(simulation_parameters, models, conformation, system
     return preproc_states, conformations
 
 
-def initialize_system(conformation, vel, model, system_data, fprec):
+def initialize_system(conformation, vel, model, system_data, fprec, do_multi_step):
     ## initial energy and forces
     print("# Computing initial energy and forces")
+    if do_multi_step:
+        model = model['large']
+        conformation = conformation['large']
+
     e, f, vir,_ = model._energy_and_forces_and_virial(model.variables, conformation)
     model_energy_unit = model.Ha_to_model_energy
     f = np.array(f) / model_energy_unit
