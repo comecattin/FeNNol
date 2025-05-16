@@ -131,7 +131,7 @@ def dynamic(simulation_parameters, device, fprec):
     ndump = int(Tdump / dt)
     system_name = system_data["name"]
 
-    model_energy_unit = au.get_multiplier(model.energy_unit)
+    model_energy_unit = au.get_multiplier(model['large'].energy_unit)
     ### Print initial pressure
     estimate_pressure = dyn_state["estimate_pressure"]
     if estimate_pressure and fprec == "float64":
@@ -453,14 +453,24 @@ def dynamic(simulation_parameters, device, fprec):
                         forces=None,  # np.asarray(system["forces"].reshape(nbeads, nat, 3)[0]) * energy_unit,
                     )
             else:
-                write_frame(
-                    fout,
-                    system_data["symbols"],
-                    np.asarray(conformation["coordinates"].reshape(-1, nat, 3)[0]),
-                    cell=cell,
-                    properties=properties,
-                    forces=None,  # np.asarray(system["forces"].reshape(nbeads, nat, 3)[0]) * energy_unit,
-                )
+                try:
+                    write_frame(
+                        fout,
+                        system_data["symbols"],
+                        np.asarray(conformation['large']["coordinates"].reshape(-1, nat, 3)[0]),
+                        cell=cell,
+                        properties=properties,
+                        forces=None,  # np.asarray(system["forces"].reshape(nbeads, nat, 3)[0]) * energy_unit,
+                    )
+                except KeyError:
+                    write_frame(
+                        fout,
+                        system_data["symbols"],
+                        np.asarray(conformation["coordinates"].reshape(-1, nat, 3)[0]),
+                        cell=cell,
+                        properties=properties,
+                        forces=None,  # np.asarray(system["forces"].reshape(nbeads, nat, 3)[0]) * energy_unit,
+                    )
             if write_centroid:
                 centroid = np.asarray(system["coordinates"][0])
                 write_frame(
