@@ -1,3 +1,8 @@
+
+[![PyPI - Version](https://img.shields.io/pypi/v/FeNNol?link=https%3A%2F%2Fpypi.org%2Fproject%2FFeNNol%2F)](https://pypi.org/project/FeNNol/)
+[![DOI:10.1063/5.0217688](https://zenodo.org/badge/DOI/10.1063/5.0217688.svg)](https://doi.org/10.1063/5.0217688) 
+
+
 ## FeNNol: Force-field-enhanced Neural Networks optimized library
 FeNNol is a library for building, training and running neural network potentials for molecular simulations. It is based on the JAX library and is designed to be fast and flexible.
 
@@ -6,31 +11,39 @@ FeNNol's documentation is available [here](https://thomasple.github.io/FeNNol/) 
 Active Learning tutorial in this [Colab notebook](https://colab.research.google.com/drive/1Z3G_jVSF60_nbDdJwbgyLdJBHTYuQ5nL?usp=sharing)
 
 ## Installation
-You can start with a fresh environment using conda:
+### From PyPI
 ```bash
-conda create -n fennol python=3.10 pip
-conda activate fennol
+# CPU version
+pip install fennol
+
+# GPU version
+pip install "fennol[cuda]"
 ```
 
-The first step is to install jax (see details at: https://jax.readthedocs.io/en/latest/installation.html).
-For a conda installation with CUDA 11.8, use:
+### Latest version from Github repo
+You can start with a fresh environment, for example using venv:
 ```bash
-conda install jaxlib=*=*cuda11* jax=0.4.25 cuda-nvcc=11.8 -c conda-forge -c nvidia
-```
-and make sure that jax uses the correct version of CUDA/CuDNN/ptxas by correctly setting your PATH and LD_LIBRARY_PATH.
-For example, you can update the `LD_LIBRARY_PATH` as following so that jax uses the CUDA libraries that you just installed with conda:
-```bash
-export LD_LIBRARY_PATH=$HOME/miniconda3/envs/fennol/lib:$LD_LIBRARY_PATH
+python -m venv fennol
+source fennol/bin/activate
 ```
 
-Then, you can clone and install FeNNol using pip:
+The first step is to install jax (see details at: https://jax.readthedocs.io/en/latest/installation.html). For example, to install the latest version using pip:
+```bash
+# CPU version
+pip install -U jax
+
+# GPU version
+pip install -U "jax[cuda12]"
+```
+
+Then, you can clone the repo and install FeNNol using pip:
 ```bash
 git clone https://github.com/thomasple/FeNNol.git
 cd FeNNol
 pip install .
 ```
 
-*Optional dependencies*:
+### Optional dependencies
 - Some modules require e3nn-jax (https://github.com/e3nn/e3nn-jax) which can be installed with:
 ```bash
 pip install --upgrade e3nn-jax
@@ -39,9 +52,9 @@ pip install --upgrade e3nn-jax
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
-- For the Deep-HP interface, cffi, pydlpack and pycuda are required:
+- For the Deep-HP interface, cffi and pycuda are required:
 ```bash
-conda install cffi pydlpack pycuda
+pip install cffi pycuda
 ```
 
 ## Examples
