@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import math
 import optax
 import os
+import pickle
 
 from ..utils.atomic_units import AtomicUnits as au  # CM1,THZ,BOHR,MPROT
 from ..utils import Counter
@@ -15,7 +16,7 @@ from ..utils.deconvolution import (
 )
 
 
-def get_thermostat(simulation_parameters, dt, system_data, fprec, rng_key=None):
+def get_thermostat(simulation_parameters, dt, system_data, fprec, rng_key=None, restart_data={}):
     state = {}
     postprocess = None
     
@@ -223,6 +224,7 @@ def get_thermostat(simulation_parameters, dt, system_data, fprec, rng_key=None):
 
         thermostat, postprocess, qtb_state = initialize_qtb(
             qtb_parameters,
+            system_data,
             fprec=fprec,
             dt=dt,
             mass=mass,
@@ -310,6 +312,7 @@ def get_thermostat(simulation_parameters, dt, system_data, fprec, rng_key=None):
 
 def initialize_qtb(
     qtb_parameters,
+    system_data,
     fprec,
     dt,
     mass,
@@ -341,6 +344,8 @@ def initialize_qtb(
     n_of_type = jnp.asarray(n_of_type, dtype=fprec)
     mass_idx = jax.ops.segment_sum(mass, type_idx, nspecies) / n_of_type
 
+    niter_deconv_kin = qtb_parameters.get("niter_deconv_kin", 7)
+    niter_deconv_pot = qtb_parameters.get("niter_deconv_pot", 20)
     corr_kin = qtb_parameters.get("corr_kin", -1)
     do_corr_kin = corr_kin <= 0
     if do_corr_kin:
@@ -521,6 +526,31 @@ def initialize_qtb(
                     "n_adabelief": n_adabelief,
                     "dFDT_s": dFDT_s,
                 }
+    
+    #####################
+    # RESTART
+    restart_file = system_data["name"]+".qtb.restart"
+    if os.path.exists(restart_file):
+        with open(restart_file, "rb") as f:
+            data = pickle.load(f)
+            state["corr_kin"] = data["corr_kin"]
+            post_state["corr_kin_prev"] = data["corr_kin"]
+            post_state["isame_kin"] = data["isame_kin"]
+            post_state["do_corr_kin"] = data["do_corr_kin"]
+            print(f"# Restored QTB state from {restart_file}")
+
+    def write_qtb_restart(state, post_state):
+        with open(restart_file, "wb") as f:
+            pickle.dump(
+                {
+                    "corr_kin": state["corr_kin"],
+                    "corr_kin_prev": post_state["corr_kin_prev"],
+                    "isame_kin": post_state["isame_kin"],
+                    "do_corr_kin": post_state["do_corr_kin"],
+                },
+                f,
+            )
+    ######################
 
     def compute_corr_pot(niter=20, verbose=False):
         if classical_kernel or hbar == 0:
@@ -749,13 +779,14 @@ def initialize_qtb(
         if verbose:
             print("# Refreshing QTB forces.")
         state, post_state = postprocess_work(state, post_state)
-        state["corr_kin"], post_state = compute_corr_kin(post_state)
+        state["corr_kin"], post_state = compute_corr_kin(post_state, niter=niter_deconv_kin)
         state["istep"] = 0
         if write_spectra:
             write_spectra_to_file(post_state)
+        write_qtb_restart(state, post_state)
         return state, post_state
 
-    post_state["corr_pot"] = jnp.asarray(compute_corr_pot(), dtype=fprec)
+    post_state["corr_pot"] = jnp.asarray(compute_corr_pot(niter=niter_deconv_pot), dtype=fprec)
 
     state["force"], post_state = refresh_force(post_state)
     return thermostat, (postprocess, post_state), state
