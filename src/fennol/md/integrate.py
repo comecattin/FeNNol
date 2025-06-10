@@ -43,8 +43,8 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
         restart_data = load_dynamics_restart(system_data)
         print("# RESTARTING FROM PREVIOUS DYNAMICS")
         if do_multi_timestep:
-            models['small'].preproc_state = restart_data["preproc_state"]
-        models['large'].preproc_state = restart_data["preproc_state"]
+            models['small'].preproc_state = restart_data["preproc_state"]["small"]
+        models['large'].preproc_state = restart_data["preproc_state"]["large"]
         conformation["coordinates"] = restart_data["coordinates"]
     else:
         restart_data = {}
@@ -84,6 +84,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
         "dt": dt,
         "pimd": nbeads is not None,
         "preproc_state": preproc_state['large'],
+        "preproc_state_large" : preproc_state['large'],
         "start_time_ps": restart_data.get("simulation_time_ps", 0.),
     }
     
@@ -493,6 +494,8 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
                 model.preprocessing.check_reallocate(preproc_state, conformation)
             )
             dyn_state[preproc_state_key] = preproc_state
+            if preproc_state_key == "preproc_state":
+                dyn_state["preproc_state_large"] = preproc_state
             if nblist_verbose and overflow:
                 print("step", istep, ", nblist overflow => reallocating nblist")
                 print("size updates:", state_up)

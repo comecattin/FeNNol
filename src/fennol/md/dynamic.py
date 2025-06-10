@@ -375,7 +375,7 @@ def dynamic(simulation_parameters, device, fprec):
                 force_preprocess = True
             print(line)
 
-            save_dynamics_restart(system_data, conformation['large'], dyn_state, system)
+            save_dynamics_restart(system_data, conformation, dyn_state, system)
 
             properties = {
                 "energy": float(system["epot"]) * energy_unit,
