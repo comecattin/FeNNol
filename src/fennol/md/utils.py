@@ -36,17 +36,19 @@ def save_dynamics_restart(system_data, conformation, dyn_state, system):
         "nbeads": system_data.get("nbeads", 0),
         "nreplicas": system_data.get("nreplicas", 0),
         "species": system_data["species"],
-        "coordinates": conformation['large']["coordinates"],
+        "coordinates": conformation["large"]["coordinates"],
         "vel": system["vel"],
+        "preproc_state": {
+            "large": dyn_state["preproc_state_large"],
+        },
         "simulation_time_ps": dyn_state["start_time_ps"] + (dyn_state["dt"]*1e-3)* dyn_state["istep"],
     }
 
+    # MTS integrator
     if 'small' in conformation:
         restart_data['preproc_state'] = {
             "small": dyn_state['preproc_state_small'],
         }
-    
-    restart_data["preproc_state"]["large"] = dyn_state['preproc_state_large']
 
     if "cells" in conformation['large']:
         restart_data["cells"] = conformation['large']["cells"]
