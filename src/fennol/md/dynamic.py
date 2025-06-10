@@ -111,12 +111,6 @@ def dynamic(simulation_parameters, device, fprec):
     Tdump = simulation_parameters.get("tdump", 1.0 / au.PS) * au.FS
     ndump = int(Tdump / dt)
     system_name = system_data["name"]
-<<<<<<< HEAD
-
-    model_energy_unit = au.get_multiplier(model['large'].energy_unit)
-    ### Print initial pressure
-=======
->>>>>>> main
     estimate_pressure = dyn_state["estimate_pressure"]
 
     @jax.jit
@@ -381,7 +375,7 @@ def dynamic(simulation_parameters, device, fprec):
                 force_preprocess = True
             print(line)
 
-            save_dynamics_restart(system_data, conformation, dyn_state, system)
+            save_dynamics_restart(system_data, conformation['large'], dyn_state, system)
 
             properties = {
                 "energy": float(system["epot"]) * energy_unit,

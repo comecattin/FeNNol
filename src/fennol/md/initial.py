@@ -241,11 +241,14 @@ def initialize_preprocessing(simulation_parameters, models, conformation, system
             print("# graphs_keys: ", graphs_keys)
             print("# nblist state:", preproc_state)
 
+        preproc_states[model_type] = preproc_state
+        conformations[model_type] = conformation
+
     ### print model
     if simulation_parameters.get("print_model", False):
         print(model.summarize(example_data=conformation))
 
-    return preproc_state, conformation
+    return preproc_states, conformations
 
 
 

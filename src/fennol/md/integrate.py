@@ -18,8 +18,21 @@ from .initial import load_model, load_system_data, initialize_preprocessing
 
 def initialize_dynamics(simulation_parameters, fprec, rng_key):
     ### LOAD MODEL
-    model = load_model(simulation_parameters)
-    model_energy_unit = au.get_multiplier(model.energy_unit)
+    models = load_model(simulation_parameters)
+    if 'small' in models:
+        do_multi_timestep = True
+        print("# Using multi-timestep integration with small and large models")
+        model_small = models['small']
+        model_small_energy_unit = au.get_multiplier(model_small.energy_unit)
+        model_large = models['large']
+        model_large_energy_unit = au.get_multiplier(model_large.energy_unit)
+    else:
+        do_multi_timestep = False
+        model_large = models['large']
+        model_large_energy_unit = au.get_multiplier(model_large.energy_unit)
+        model_energy_unit = model_large_energy_unit
+        print("# Using single-timestep integration with model")
+    model = models['large']
 
     ### Get the coordinates and species from the xyz file
     system_data, conformation = load_system_data(simulation_parameters, fprec)
@@ -29,24 +42,33 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
         ### RESTART FROM PREVIOUS DYNAMICS
         restart_data = load_dynamics_restart(system_data)
         print("# RESTARTING FROM PREVIOUS DYNAMICS")
-        model.preproc_state = restart_data["preproc_state"]
+        if do_multi_timestep:
+            models['small'].preproc_state = restart_data["preproc_state"]
+        models['large'].preproc_state = restart_data["preproc_state"]
         conformation["coordinates"] = restart_data["coordinates"]
     else:
         restart_data = {}
 
     ### INITIALIZE PREPROCESSING
     preproc_state, conformation = initialize_preprocessing(
-        simulation_parameters, model, conformation, system_data
+        simulation_parameters, models, conformation, system_data
     )
 
     ### get dynamics parameters
     dt = simulation_parameters.get("dt") * au.FS
-    n_slow = simulation_parameters.get("n_slow", 1)
     dt2 = 0.5 * dt
     mass = system_data["mass"]
     totmass_amu = system_data["totmass_amu"]
     nat = system_data["nat"]
     dtm = jnp.asarray(dt / mass[:, None], dtype=fprec)
+    if do_multi_timestep:
+        dtsmall = simulation_parameters["dtsmall"] * au.FS
+        dtmlong = dtm
+        n_slow = int(dt / dtsmall) + 1
+        dtm = dtm/n_slow
+        dt2 = dt2/n_slow
+        print("# Using multi-timestep integration with n_slow =", n_slow)
+        print("# Adjusted dt_small =", dtsmall, "fs")
 
     nreplicas = system_data.get("nreplicas", 1)
     nbeads = system_data.get("nbeads", None)
@@ -55,14 +77,16 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
         dtm = dtm[None, :, :]
 
     ### INITIALIZE DYNAMICS STATE
-    system = {"coordinates": conformation["coordinates"]}
+    system = {"coordinates": conformation['large']["coordinates"]}
+
     dyn_state = {
         "istep": 0,
         "dt": dt,
         "pimd": nbeads is not None,
-        "preproc_state": preproc_state,
+        "preproc_state": preproc_state['large'],
         "start_time_ps": restart_data.get("simulation_time_ps", 0.),
     }
+    
     gradient_keys = ["coordinates"]
     thermo_updates = []
 
@@ -93,7 +117,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
         )
         estimate_pressure = variable_cell or pbc_data["estimate_pressure"]
         system["barostat"] = barostat_state
-        system["cell"] = conformation["cells"][0]
+        system["cell"] = conformation['large']["cells"][0]
         if estimate_pressure:
             pressure_o_weight = simulation_parameters.get("pressure_o_weight", 0.0)
             assert (
@@ -132,11 +156,20 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
             simulation_parameters, system_data, fprec, dt, is_qtb
         )
         dyn_state["ir_spectrum"] = ir_state
+    
+    ### Multitimestep integration
+    if do_multi_timestep:
+        dyn_state['preproc_state_small'] = preproc_state['small']
 
     ### BUILD GRADIENT FUNCTION
     energy_and_gradient = model.get_gradient_function(
         *gradient_keys, jit=True, variables_as_input=True
     )
+    if do_multi_timestep:
+        energy_and_gradient_small = model_small.get_gradient_function(
+            *gradient_keys, jit=True, variables_as_input=True
+        )
+        
 
     ### COLLECT THERMO UPDATES
     if len(thermo_updates) == 1:
@@ -213,20 +246,19 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
 
     ###############################################
     ### DEFINE OBSERVABLE FUNCTION
+
     @jax.jit
-    def update_observables(system, conformation):
-        ### POTENTIAL ENERGY AND FORCES
+    def update_forces(system, conformation, model_energy_unit):
         epot, de, out = energy_and_gradient(model.variables, conformation)
         epot = epot / model_energy_unit
         de = {k: v / model_energy_unit for k, v in de.items()}
         forces = -de["coordinates"]
-
+        
         if nbeads is not None:
-            ### PROJECT FORCES ONTO POLYMER NORMAL MODES
             forces = jnp.einsum(
                 "in,i...->n...", eigmat, forces.reshape(nbeads, nat, 3)
             ) * (1.0 / nbeads**0.5)
-
+        
         system = {
             **system,
             "epot": jnp.mean(epot),
@@ -234,8 +266,36 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
             "energy_gradients": de,
         }
 
+        return system, out
+    
+    @jax.jit
+    def update_forces_small(system, conformation, model_energy_unit):
+        epot, de, out = energy_and_gradient_small(model_small.variables, conformation)
+        epot = epot / model_energy_unit
+        de = {k: v / model_energy_unit for k, v in de.items()}
+        forces = -de["coordinates"]
+        
+        if nbeads is not None:
+            forces = jnp.einsum(
+                "in,i...->n...", eigmat, forces.reshape(nbeads, nat, 3)
+            ) * (1.0 / nbeads**0.5)
+        
+        system = {
+            **system,
+            "epot": jnp.mean(epot),
+            "forces_small": forces,
+            "energy_gradients": de,
+        }
+
+        return system, out
+
+    @jax.jit
+    def update_observables(system, out):
+        
         ### KINETIC ENERGY
+        forces = system["forces"]
         v = system["vel"]
+        de = system["energy_gradients"]
         if nbeads is None:
             corr_kin = system["thermostat"].get("corr_kin", 1.0)
             # ek = 0.5 * jnp.sum(mass[:, None] * v**2) / state_th.get("corr_kin", 1.0)
@@ -412,19 +472,27 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
     dyn_state["nblist_countdown"] = 0
     dyn_state["print_skin_activation"] = nblist_warmup > 0
 
-    def update_graphs(istep, dyn_state, system, conformation, force_preprocess=False):
+    def update_graphs(
+            istep,
+            dyn_state,
+            system,
+            conformation,
+            model,
+            force_preprocess=False,
+            preproc_state_key = "preproc_state",
+        ):
         nblist_countdown = dyn_state["nblist_countdown"]
         if nblist_countdown <= 0 or force_preprocess or (istep < nblist_warmup):
             ### FULL NBLIST REBUILD
             dyn_state["nblist_countdown"] = nblist_stride - 1
-            preproc_state = dyn_state["preproc_state"]
+            preproc_state = dyn_state[preproc_state_key]
             conformation = model.preprocessing.process(
                 preproc_state, update_conformation(conformation, system)
             )
             preproc_state, state_up, conformation, overflow = (
                 model.preprocessing.check_reallocate(preproc_state, conformation)
             )
-            dyn_state["preproc_state"] = preproc_state
+            dyn_state[preproc_state_key] = preproc_state
             if nblist_verbose and overflow:
                 print("step", istep, ", nblist overflow => reallocating nblist")
                 print("size updates:", state_up)
@@ -455,18 +523,10 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
                 dyn_state["print_skin_activation"] = False
 
             dyn_state["nblist_countdown"] = nblist_countdown - 1
-            
-            if do_multi_timestep:
-                conformation['large'] = model['large'].preprocessing.update_skin(
-                update_conformation(conformation['large'], system)
+    
+            conformation = model.preprocessing.update_skin(
+                update_conformation(conformation, system)
             )
-                conformation['small'] = model['small'].preprocessing.update_skin(
-                    update_conformation(conformation['small'], system)
-                )
-            else:
-                conformation = model.preprocessing.update_skin(
-                    update_conformation(conformation, system)
-                )
             
             if do_ir_spectrum and model_ir is not None:
                 dyn_state["conformation_ir"] = model_ir.preprocessing.update_skin(
@@ -484,16 +544,56 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
             "istep": dyn_state["istep"] + 1,
         }
 
-        ### INTEGRATE EQUATIONS OF MOTION
-        system = integrate(system)
+        # RESPA Scheme
+        if do_multi_timestep:
+            
+            for i in range(n_slow):
+                # Integrate equations of motion
+                system['forces'] = system['forces_small']
+                system = integrate(system)
+                
+                dyn_state = {
+                    **dyn_state,
+                    "preproc_state": dyn_state['preproc_state_small']
+                }
 
-        ### UPDATE CONFORMATION AND GRAPHS
-        conformation, dyn_state = update_graphs(
-            istep, dyn_state, system, conformation, force_preprocess
-        )
+                conformation['small'] = model_small.preprocessing.update_skin(
+                    update_conformation(conformation['small'], system)
+                )
 
-        ## COMPUTE FORCES AND OBSERVABLES
-        system, out = update_observables(system, conformation)
+                
+                # Compute forces and observables
+                system, out = update_forces_small(system, conformation['small'], model_small_energy_unit)
+
+            conformation['small'], dyn_state = update_graphs(
+                    istep, dyn_state, system, conformation['small'], model_small, force_preprocess, preproc_state_key='preproc_state_small'
+                )
+
+            conformation['large'], dyn_state = update_graphs(
+                istep, 
+                dyn_state, 
+                system,
+                conformation['large'],
+                model_large,
+                force_preprocess,
+                preproc_state_key='preproc_state'
+            )
+            system, out = update_forces(
+                system, conformation['large'], model_large_energy_unit
+            )
+            system, out = update_observables(system, out)
+            system['vel'] = system['vel'] + dtmlong * (system['forces'] - system['forces_small'])
+
+        else:
+            ### INTEGRATE EQUATIONS OF MOTION
+            system = integrate(system)
+            ### UPDATE CONFORMATION AND GRAPHS
+            conformation['large'], dyn_state = update_graphs(
+                istep, dyn_state, system, conformation['large'], model, force_preprocess
+            )
+            ## COMPUTE FORCES AND OBSERVABLES
+            system, out = update_forces(system, conformation['large'], model_energy_unit)
+            system, out = update_observables(system, out)
 
         ## END OF STEP UPDATES
         if do_thermostat_post:
@@ -513,7 +613,13 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
 
     print("# Computing initial energy and forces")
 
-    conformation = update_conformation(conformation, system)
+    conformation['large'] = update_conformation(conformation['large'], system)
+    if do_multi_timestep:
+        conformation['small'] = update_conformation(conformation['small'], system)
+        system, _ = update_forces_small(
+            system, conformation['small'],
+            model_small_energy_unit
+        )
     # initialize IR conformation
     if do_ir_spectrum and model_ir is not None:
         dyn_state["preproc_state_ir"], dyn_state["conformation_ir"] = (
@@ -523,6 +629,9 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
             )
         )
 
-    system, _ = update_observables(system, conformation)
+
+    
+    system, _ = update_forces(system, conformation['large'], model_large_energy_unit)
+    system, _ = update_observables(system, conformation['large'])
 
     return step, update_conformation, system_data, dyn_state, conformation, system
