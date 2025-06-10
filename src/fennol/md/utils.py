@@ -46,9 +46,7 @@ def save_dynamics_restart(system_data, conformation, dyn_state, system):
 
     # MTS integrator
     if 'small' in conformation:
-        restart_data['preproc_state'] = {
-            "small": dyn_state['preproc_state_small'],
-        }
+        restart_data['preproc_state']['small'] = dyn_state['preproc_state_small']
 
     if "cells" in conformation['large']:
         restart_data["cells"] = conformation['large']["cells"]

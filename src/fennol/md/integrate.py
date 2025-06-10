@@ -470,7 +470,8 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
     if nblist_skin <= 0:
         nblist_stride = 1
 
-    dyn_state["nblist_countdown"] = 0
+    dyn_state["nblist_countdown_large"] = 0
+    dyn_state["nblist_countdown_small"] = 0
     dyn_state["print_skin_activation"] = nblist_warmup > 0
 
     def update_graphs(
@@ -482,10 +483,17 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
             force_preprocess=False,
             preproc_state_key = "preproc_state",
         ):
-        nblist_countdown = dyn_state["nblist_countdown"]
+
+        if preproc_state_key == "preproc_state_large":
+            nblist_countdown_key = "nblist_countdown_large"
+        else:
+            nblist_countdown_key = "nblist_countdown_small"
+        
+        nblist_countdown = dyn_state[nblist_countdown_key]
+        
         if nblist_countdown <= 0 or force_preprocess or (istep < nblist_warmup):
             ### FULL NBLIST REBUILD
-            dyn_state["nblist_countdown"] = nblist_stride - 1
+            dyn_state[nblist_countdown_key] = nblist_stride - 1
             preproc_state = dyn_state[preproc_state_key]
             conformation = model.preprocessing.process(
                 preproc_state, update_conformation(conformation, system)
@@ -525,7 +533,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
                     )
                 dyn_state["print_skin_activation"] = False
 
-            dyn_state["nblist_countdown"] = nblist_countdown - 1
+            dyn_state[nblist_countdown_key] = nblist_countdown - 1
     
             conformation = model.preprocessing.update_skin(
                 update_conformation(conformation, system)
@@ -579,7 +587,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
                 conformation['large'],
                 model_large,
                 force_preprocess,
-                preproc_state_key='preproc_state'
+                preproc_state_key='preproc_state_large'
             )
             system, out = update_forces(
                 system, conformation['large'], model_large_energy_unit
