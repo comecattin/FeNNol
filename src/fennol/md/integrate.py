@@ -61,12 +61,14 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
     totmass_amu = system_data["totmass_amu"]
     nat = system_data["nat"]
     dtm = jnp.asarray(dt / mass[:, None], dtype=fprec)
+    dt_thermo = dt
     if do_multi_timestep:
         dtsmall = simulation_parameters["dtsmall"] * au.FS
         dtmlong = dtm
         n_slow = int(dt / dtsmall) + 1
         dtm = dtm/n_slow
         dt2 = dt2/n_slow
+        dt_thermo = dtsmall
         print("# Using multi-timestep integration with n_slow =", n_slow)
         print("# Adjusted dt_small =", dtsmall, "fs")
 
@@ -99,7 +101,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
         thermostat_state,
         initial_vel,
         dyn_state["thermostat_name"],
-    ) = get_thermostat(simulation_parameters, dt, system_data, fprec, thermostat_rng,restart_data)
+    ) = get_thermostat(simulation_parameters, dt_thermo, system_data, fprec, thermostat_rng,restart_data)
     do_thermostat_post = thermostat_post is not None
     if do_thermostat_post:
         thermostat_post, post_state = thermostat_post
@@ -114,7 +116,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
         ### INITIALIZE BAROSTAT
         barostat_key, rng_key = jax.random.split(rng_key)
         thermo_update_ensemble, variable_cell, barostat_state = get_barostat(
-            thermostat, simulation_parameters, dt, system_data, fprec, barostat_key,restart_data
+            thermostat, simulation_parameters, dt_thermo, system_data, fprec, barostat_key,restart_data
         )
         estimate_pressure = variable_cell or pbc_data["estimate_pressure"]
         system["barostat"] = barostat_state
@@ -154,7 +156,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
     if do_ir_spectrum:
         is_qtb = dyn_state["thermostat_name"].endswith("QTB")
         model_ir, ir_state, save_dipole, ir_post = initialize_ir_spectrum(
-            simulation_parameters, system_data, fprec, dt, is_qtb
+            simulation_parameters, system_data, fprec, dt_thermo, is_qtb
         )
         dyn_state["ir_spectrum"] = ir_state
     
@@ -187,11 +189,11 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
         cay_correction = simulation_parameters.get("cay_correction", True)
         omk = system_data["omk"]
         eigmat = system_data["eigmat"]
-        cayfact = 1.0 / (4.0 + (dt * omk[1:, None, None]) ** 2) ** 0.5
+        cayfact = 1.0 / (4.0 + (dt_thermo * omk[1:, None, None]) ** 2) ** 0.5
         if cay_correction:
             axx = jnp.asarray(2 * cayfact)
-            axv = jnp.asarray(dt * cayfact)
-            avx = jnp.asarray(-dt * cayfact * omk[1:, None, None] ** 2)
+            axv = jnp.asarray(dt_thermo * cayfact)
+            avx = jnp.asarray(-dt_thermo * cayfact * omk[1:, None, None] ** 2)
         else:
             axx = jnp.asarray(np.cos(omk[1:, None, None] * dt2))
             axv = jnp.asarray(np.sin(omk[1:, None, None] * dt2) / omk[1:, None, None])
