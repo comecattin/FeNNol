@@ -90,8 +90,13 @@ def main():
     parameters = load_configuration(config_file)
 
     ### Set the device
-    device: str = parameters.get("device", "cpu").lower()
+    if "FENNOL_DEVICE" in os.environ:
+        device = os.environ["FENNOL_DEVICE"].lower()
+        print(f"# Setting device from env FENNOL_DEVICE={device}")
+    else:
+        device: str = parameters.get("device", "cpu").lower()
     if device == "cpu":
+        jax.config.update('jax_platforms', 'cpu')
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
     elif device.startswith("cuda") or device.startswith("gpu"):
         if ":" in device:
@@ -431,7 +436,6 @@ def train(
     if gpu_preprocessing:
         print("GPU preprocessing activated.")
 
-    minimum_image = training_parameters.get("minimum_image", False)
     preproc_state = unfreeze(model.preproc_state)
     layer_state = []
     for st in preproc_state["layers_state"]:
@@ -440,8 +444,6 @@ def train(
         #     if nblist_stride > 1:
         #         st["skin_stride"] = nblist_stride
         #         st["skin_count"] = nblist_stride
-        if pbc_training:
-            stnew["minimum_image"] = minimum_image
         if "nblist_mult_size" in training_parameters:
             stnew["nblist_mult_size"] = training_parameters["nblist_mult_size"]
         if "nblist_add_neigh" in training_parameters:
@@ -479,6 +481,21 @@ def train(
     if save_model_every > 0:
         save_model_every = list(range(save_model_every, max_epochs+save_model_every, save_model_every))
         save_model_at_epochs = save_model_at_epochs.union(save_model_every)
+    if "save_model_schedule" in training_parameters:
+        save_model_schedule_def = [int(i) for i in training_parameters["save_model_schedule"]]
+        save_model_schedule = []
+        while len(save_model_schedule_def) > 0:
+            i = save_model_schedule_def.pop(0)
+            if i > 0:
+                save_model_schedule.append(i)
+            elif i < 0:
+                start = -i
+                freq = save_model_schedule_def.pop(0)
+                assert freq > 0, "syntax error in save_model_schedule"
+                save_model_schedule.extend(
+                    list(range(start, max_epochs + 1, freq))
+                )
+        save_model_at_epochs = save_model_at_epochs.union(save_model_schedule)
     save_model_at_epochs = list(save_model_at_epochs)
     save_model_at_epochs.sort()
 

@@ -17,6 +17,10 @@ from .initial import load_model, load_system_data, initialize_preprocessing
 
 
 def initialize_dynamics(simulation_parameters, fprec, rng_key):
+    
+    ### Get the coordinates and species from the xyz file
+    system_data, conformation = load_system_data(simulation_parameters, fprec)
+    
     ### LOAD MODEL
     models = load_model(simulation_parameters)
     if 'small' in models:
@@ -26,16 +30,23 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
         model_small_energy_unit = au.get_multiplier(model_small.energy_unit)
         model_large = models['large']
         model_large_energy_unit = au.get_multiplier(model_large.energy_unit)
+
+        system_data["model_large_energy_unit"] = model_large_energy_unit
+        system_data["model_large_energy_unit_str"] = model_large.energy_unit
+
+        system_data["model_small_energy_unit"] = model_small_energy_unit
+        system_data["model_small_energy_unit_str"] = model_small.energy_unit
+    
     else:
         do_multi_timestep = False
         model_large = models['large']
         model_large_energy_unit = au.get_multiplier(model_large.energy_unit)
         model_energy_unit = model_large_energy_unit
+        system_data["model_energy_unit"] = model_energy_unit
+        system_data["model_energy_unit_str"] = model_large.energy_unit
         print("# Using single-timestep integration with model")
     model = models['large']
 
-    ### Get the coordinates and species from the xyz file
-    system_data, conformation = load_system_data(simulation_parameters, fprec)
 
     ### FINISH BUILDING conformation
     if os.path.exists(get_restart_file(system_data)):
@@ -58,7 +69,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
     dt = simulation_parameters.get("dt") * au.FS
     dt2 = 0.5 * dt
     mass = system_data["mass"]
-    totmass_amu = system_data["totmass_amu"]
+    densmass = system_data["totmass_Da"]*(au.MPROT*au.GCM3)
     nat = system_data["nat"]
     dtm = jnp.asarray(dt / mass[:, None], dtype=fprec)
     dt_thermo = dt
@@ -253,6 +264,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
     @jax.jit
     def update_forces(system, conformation, model_energy_unit):
         epot, de, out = energy_and_gradient(model.variables, conformation)
+        out["forces"] = -de["coordinates"]
         epot = epot / model_energy_unit
         de = {k: v / model_energy_unit for k, v in de.items()}
         forces = -de["coordinates"]
@@ -341,6 +353,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
 
             vir = jnp.mean(de["strain"], axis=0)
             system["virial"] = vir
+            out["virial_tensor"] = vir * model_energy_unit
             
             pV =  2 * ek  - vir
             system["PV_tensor"] = pV
@@ -349,7 +362,7 @@ def initialize_dynamics(simulation_parameters, fprec, rng_key):
             system["pressure_tensor"] = Pres
             system["pressure"] = jnp.trace(Pres) * (1.0 / 3.0)
             if variable_cell:
-                density = totmass_amu / volume
+                density = densmass / volume
                 system["density"] = density
                 system["volume"] = volume
 

@@ -12,6 +12,7 @@ from ..models import FENNIX
 
 from ..utils.periodic_table import PERIODIC_TABLE_REV_IDX, ATOMIC_MASSES
 from ..utils.atomic_units import AtomicUnits as au
+from ..utils import detect_topology,parse_cell
 
 
 def load_model(simulation_parameters):
@@ -51,8 +52,8 @@ def load_model(simulation_parameters):
 def load_system_data(simulation_parameters, fprec):
     ## LOAD SYSTEM CONFORMATION FROM FILES
     system_name = str(simulation_parameters.get("system", "system")).strip()
-    indexed = simulation_parameters.get("xyz_input/indexed", True)
-    has_comment_line = simulation_parameters.get("xyz_input/has_comment_line", False)
+    indexed = simulation_parameters.get("xyz_input/indexed", False)
+    has_comment_line = simulation_parameters.get("xyz_input/has_comment_line", True)
     xyzfile = Path(simulation_parameters.get("xyz_input/file", system_name + ".xyz"))
     if not xyzfile.exists():
         raise FileNotFoundError(f"xyz file {xyzfile} not found")
@@ -65,20 +66,39 @@ def load_system_data(simulation_parameters, fprec):
     nat = species.shape[0]
 
     ## GET MASS
-    mass_amu = np.array(ATOMIC_MASSES, dtype=fprec)[species]
+    mass_Da = np.array(ATOMIC_MASSES, dtype=fprec)[species]
     deuterate = simulation_parameters.get("deuterate", False)
     if deuterate:
         print("# Replacing all hydrogens with deuteriums")
-        mass_amu[species == 1] *= 2.0
-    mass = mass_amu * (au.MPROT * (au.FS / au.BOHR) ** 2)
+        mass_Da[species == 1] *= 2.0
+
+    totmass_Da = mass_Da.sum()
+
+    mass = mass_Da.copy()
+    hmr = simulation_parameters.get("hmr", 0)
+    if hmr > 0:
+        print(f"# Adding {hmr} Da to H masses and repartitioning on others for total mass conservation.")
+        Hmask = species == 1
+        added_mass = hmr * Hmask.sum()
+        mass[Hmask] += hmr
+        wmass = mass[~Hmask]
+        mass[~Hmask] -= added_mass * wmass/ wmass.sum()
+
+        assert np.isclose(mass.sum(), totmass_Da), "Mass conservation failed"
+
+    mass = mass * (au.MPROT * (au.FS / au.BOHR) ** 2)
 
     ### GET TEMPERATURE
     temperature = np.clip(simulation_parameters.get("temperature", 300.0), 1.0e-6, None)
     kT = temperature / au.KELVIN
-    totmass_amu = mass_amu.sum() / 6.02214129e-1
 
     ### GET TOTAL CHARGE
-    total_charge = simulation_parameters.get("total_charge", 0.0)
+    total_charge = simulation_parameters.get("total_charge", None)
+    if total_charge is None:
+        total_charge = 0
+    else:
+        total_charge = int(total_charge)
+        print("# total charge: ", total_charge,"e")
 
     ### ENERGY UNIT
     energy_unit_str = simulation_parameters.get("energy_unit", "kcal/mol")
@@ -91,25 +111,29 @@ def load_system_data(simulation_parameters, fprec):
         "symbols": symbols,
         "species": species,
         "mass": mass,
+        "mass_Da": mass_Da,
+        "totmass_Da": totmass_Da,
         "temperature": temperature,
         "kT": kT,
-        "totmass_amu": totmass_amu,
         "total_charge": total_charge,
         "energy_unit": energy_unit,
         "energy_unit_str": energy_unit_str,
     }
+    input_flags = simulation_parameters.get("model_flags", [])
+    flags = {f:None for f in input_flags}
 
     ### Set boundary conditions
     cell = simulation_parameters.get("cell", None)
     if cell is not None:
-        cell = np.array(cell, dtype=fprec).reshape(3, 3)
+        cell = parse_cell(cell)
+        # cell = np.array(cell, dtype=fprec).reshape(3, 3)
         reciprocal_cell = np.linalg.inv(cell)
         volume = np.abs(np.linalg.det(cell))
         print("# cell matrix:")
         for l in cell:
             print("# ", l)
         # print(cell)
-        dens = totmass_amu / volume
+        dens = totmass_Da * (au.MPROT*au.GCM3) / volume
         print("# density: ", dens.item(), " g/cm^3")
         minimum_image = simulation_parameters.get("minimum_image", True)
         estimate_pressure = simulation_parameters.get("estimate_pressure", False)
@@ -126,9 +150,29 @@ def load_system_data(simulation_parameters, fprec):
             "minimum_image": minimum_image,
             "estimate_pressure": estimate_pressure,
         }
+        if minimum_image:
+            flags["minimum_image"] = None
     else:
         pbc_data = None
     system_data["pbc"] = pbc_data
+
+    ### TOPOLOGY
+    topology_key = simulation_parameters.get("topology", None)
+    if topology_key is not None:
+        topology_key = str(topology_key).strip()
+        if topology_key.lower() == "detect":
+            topology = detect_topology(species,coordinates,cell=cell)
+            np.savetxt(system_name +".topo", topology+1, fmt="%d")
+            print("# Detected topology saved to", system_name + ".topo")
+        else:
+            assert Path(topology_key).exists(), f"Topology file {topology_key} not found"
+            topology = np.loadtxt(topology_key, dtype=np.int32)-1
+            assert topology.shape[1] == 2, "Topology file must have two columns (source, target)"
+            print("# Topology loaded from", topology_key)
+    else:
+        topology = None
+    
+    system_data["topology"] = topology
 
     ### PIMD
     nbeads = simulation_parameters.get("nbeads", None)
@@ -201,6 +245,8 @@ def load_system_data(simulation_parameters, fprec):
     additional_keys = simulation_parameters.get("additional_keys", {})
     for key, value in additional_keys.items():
         conformation[key] = value
+    
+    conformation["flags"] = flags
 
     return system_data, conformation
 
@@ -208,7 +254,6 @@ def load_system_data(simulation_parameters, fprec):
 def initialize_preprocessing(simulation_parameters, models, conformation, system_data):
     nblist_verbose = simulation_parameters.get("nblist_verbose", False)
     nblist_skin = simulation_parameters.get("nblist_skin", -1.0)
-    pbc_data = system_data.get("pbc", None)
 
     ### CONFIGURE PREPROCESSING
     preproc_states = {}
@@ -218,8 +263,6 @@ def initialize_preprocessing(simulation_parameters, models, conformation, system
         layer_state = []
         for st in preproc_state["layers_state"]:
             stnew = unfreeze(st)
-            if pbc_data is not None:
-                stnew["minimum_image"] = pbc_data["minimum_image"]
             if nblist_skin > 0:
                 stnew["nblist_skin"] = nblist_skin
             if "nblist_mult_size" in simulation_parameters:

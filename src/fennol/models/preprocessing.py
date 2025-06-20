@@ -124,7 +124,7 @@ class GraphGenerator:
         else:
             cells = np.array(inputs["cells"], dtype=np.float32)
             reciprocal_cells = np.array(inputs["reciprocal_cells"], dtype=np.float32)
-            minimage = state.get("minimum_image", True)
+            minimage = "minimum_image" in inputs.get("flags", {})
             if minimage:
                 ## MINIMUM IMAGE CONVENTION
                 vec = coords[p2] - coords[p1]
@@ -407,7 +407,8 @@ class GraphGenerator:
         else:
             cells = inputs["cells"]
             reciprocal_cells = inputs["reciprocal_cells"]
-            minimage = state.get("minimum_image", True)
+            # minimage = state.get("minimum_image", True)
+            minimage = "minimum_image" in inputs.get("flags", {})
 
             def compute_pbc(vec, reciprocal_cell, cell, mode="round"):
                 vecpbc = jnp.dot(vec, reciprocal_cell)
@@ -752,6 +753,7 @@ class GraphProcessor(nn.Module):
         if "alch_group" in inputs:
             alch_group = inputs["alch_group"]
             lambda_e = inputs["alch_elambda"]
+            lambda_v = inputs["alch_vlambda"]
             mask = alch_group[edge_src] == alch_group[edge_dst]
             graph_out["switch_raw"] = switch
             graph_out["switch"] = jnp.where(
@@ -759,19 +761,18 @@ class GraphProcessor(nn.Module):
                 switch,
                 0.5*(1.-jnp.cos(jnp.pi*lambda_e)) * switch ,
             )
+            graph_out["distances_raw"] = distances
+            if "alch_softcore_e" in inputs:
+                alch_alpha = (1-lambda_e)*inputs["alch_softcore_e"]**2
+            else:
+                alch_alpha = (1-lambda_v)*inputs.get("alch_softcore_v",0.5)**2
 
-            if "alch_softcore_e" in inputs or "alch_softcore_v" in inputs:
-                graph_out["distances_raw"] = distances
-                if "alch_softcore_e" in inputs:
-                    alch_alpha = (1-inputs["alch_elambda"])*inputs["alch_softcore_e"]**2
-                else:
-                    alch_alpha = (1-inputs["alch_vlambda"])*inputs["alch_softcore_v"]**2
-                distances = jnp.where(
-                    mask,
-                    distances,
-                    safe_sqrt(alch_alpha + d2 * (1. - alch_alpha/self.cutoff**2))
-                )  
-                graph_out["distances"] = distances
+            graph_out["distances"] = jnp.where(
+                mask,
+                distances,
+                safe_sqrt(alch_alpha + d2 * (1. - alch_alpha/self.cutoff**2))
+            )  
+
 
         return {**inputs, self.graph_key: graph_out}
 
@@ -1017,6 +1018,7 @@ class GraphFilterProcessor(nn.Module):
             edge_dst=graph["edge_dst"]
             alch_group = inputs["alch_group"]
             lambda_e = inputs["alch_elambda"]
+            lambda_v = inputs["alch_vlambda"]
             mask = alch_group[edge_src] == alch_group[edge_dst]
             graph_out["switch_raw"] = switch
             graph_out["switch"] = jnp.where(
@@ -1025,18 +1027,18 @@ class GraphFilterProcessor(nn.Module):
                 0.5*(1.-jnp.cos(jnp.pi*lambda_e)) * switch ,
             )
 
-            if "alch_softcore_e" in inputs or "alch_softcore_v" in inputs:
-                graph_out["distances_raw"] = distances
-                if "alch_softcore_e" in inputs:
-                    alch_alpha = (1-inputs["alch_elambda"])*inputs["alch_softcore_e"]**2
-                else:
-                    alch_alpha = (1-inputs["alch_vlambda"])*inputs["alch_softcore_v"]**2
-                distances = jnp.where(
-                    mask,
-                    distances,
-                    safe_sqrt(alch_alpha + distances**2 * (1. - alch_alpha/self.cutoff**2))
-                )  
-                graph_out["distances"] = distances
+            graph_out["distances_raw"] = distances
+            if "alch_softcore_e" in inputs:
+                alch_alpha = (1-lambda_e)*inputs["alch_softcore_e"]**2
+            else:
+                alch_alpha = (1-lambda_v)*inputs.get("alch_softcore_v",0.5)**2
+
+            graph_out["distances"] = jnp.where(
+                mask,
+                distances,
+                safe_sqrt(alch_alpha + distances**2 * (1. - alch_alpha/self.cutoff**2))
+            )  
+            
 
         return {**inputs, self.graph_key: graph_out}
 
@@ -1732,9 +1734,9 @@ def atom_unpadding(inputs: Dict[str, Any]) -> Dict[str, Any]:
     if "true_atoms" not in inputs:
         return inputs
 
-    species = inputs["species"]
-    true_atoms = inputs["true_atoms"]
-    true_sys = inputs["true_sys"]
+    species = np.asarray(inputs["species"])
+    true_atoms = np.asarray(inputs["true_atoms"])
+    true_sys = np.asarray(inputs["true_sys"])
     natall = species.shape[0]
     nat = np.argmax(species <= 0)
     if nat == 0:
@@ -1746,9 +1748,10 @@ def atom_unpadding(inputs: Dict[str, Any]) -> Dict[str, Any]:
     output = {**inputs}
     for k, v in inputs.items():
         if isinstance(v, jax.Array) or isinstance(v, np.ndarray):
+            v = np.asarray(v)
             if v.ndim == 0:
-                continue
-            if v.shape[0] == natall:
+                output[k] = v
+            elif v.shape[0] == natall:
                 output[k] = v[true_atoms]
             elif v.shape[0] == nsysall:
                 output[k] = v[true_sys]
@@ -1831,37 +1834,29 @@ class PreprocessingChain:
         do_check_input = state.get("check_input", True)
         if do_check_input:
             inputs = check_input(inputs)
-        new_state = []
-        layer_state = state["layers_state"]
-        i = 0
+        new_state = {**state}
         if self.use_atom_padding:
-            s, inputs = self.atom_padder(layer_state[0], inputs)
-            new_state.append(s)
-            i += 1
-        for layer in self.layers:
+            s, inputs = self.atom_padder(state["padder_state"], inputs)
+            new_state["padder_state"] = s
+        layer_state = state["layers_state"]
+        new_layer_state = []
+        for i,layer in enumerate(self.layers):
             s, inputs = layer(layer_state[i], inputs, return_state_update=False)
-            new_state.append(s)
-            i += 1
-        return FrozenDict({**state, "layers_state": tuple(new_state)}), convert_to_jax(
-            inputs
-        )
+            new_layer_state.append(s)
+        new_state["layers_state"] = tuple(new_layer_state)
+        return FrozenDict(new_state), convert_to_jax(inputs)
 
     def check_reallocate(self, state, inputs):
         new_state = []
         state_up = []
         layer_state = state["layers_state"]
-        i = 0
-        if self.use_atom_padding:
-            new_state.append(layer_state[0])
-            i += 1
         parent_overflow = False
-        for layer in self.layers:
+        for i,layer in enumerate(self.layers):
             s, s_up, inputs, parent_overflow = layer.check_reallocate(
                 layer_state[i], inputs, parent_overflow
             )
             new_state.append(s)
             state_up.append(s_up)
-            i += 1
 
         if not parent_overflow:
             return state, {}, inputs, False
@@ -1874,17 +1869,15 @@ class PreprocessingChain:
 
     def atom_padding(self, state, inputs):
         if self.use_atom_padding:
-            padder_state = state["layers_state"][0]
-            return self.atom_padder(padder_state, inputs)
+            padder_state,inputs = self.atom_padder(state["padder_state"], inputs)
+            return FrozenDict({**state,"padder_state": padder_state}), inputs
         return state, inputs
 
     @partial(jax.jit, static_argnums=(0, 1))
     def process(self, state, inputs):
         layer_state = state["layers_state"]
-        i = 1 if self.use_atom_padding else 0
-        for layer in self.layers:
+        for i,layer in enumerate(self.layers):
             inputs = layer.process(layer_state[i], inputs)
-            i += 1
         return inputs
 
     @partial(jax.jit, static_argnums=(0))
@@ -1894,12 +1887,14 @@ class PreprocessingChain:
         return inputs
 
     def init(self):
-        state = []
+        state = {"check_input": True}
         if self.use_atom_padding:
-            state.append(self.atom_padder.init())
+            state["padder_state"] = self.atom_padder.init()
+        layer_state = []
         for layer in self.layers:
-            state.append(layer.init())
-        return FrozenDict({"check_input": True, "layers_state": state})
+            layer_state.append(layer.init())
+        state["layers_state"] = tuple(layer_state)
+        return FrozenDict(state)
 
     def init_with_output(self, inputs):
         state = self.init()
